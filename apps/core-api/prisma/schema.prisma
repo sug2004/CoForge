@@ -1,0 +1,109 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  OWNER
+  EDITOR
+  VIEWER
+}
+
+model User {
+  id        String  @id @default(uuid())
+  githubId  String? @unique
+  username  String
+  email     String? @unique
+  password  String?
+  avatarUrl String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships     WorkspaceMember[]
+  ownedWorkspaces Workspace[]       @relation("WorkspaceOwner")
+  sessions        Session[]         @relation("SessionCreator")
+  events          SessionEvent[]    @relation("EventActor")
+}
+
+model Workspace {
+  id   String @id @default(uuid())
+  name String
+
+  ownerId String
+  owner   User   @relation("WorkspaceOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members  WorkspaceMember[]
+  projects Project[]
+}
+
+model WorkspaceMember {
+  id String @id @default(uuid())
+
+  workspaceId String
+  userId      String
+
+  role Role @default(EDITOR)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  joinedAt DateTime @default(now())
+
+  @@unique([workspaceId, userId])
+}
+
+model Project {
+  id String @id @default(uuid())
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  name          String
+  repoUrl       String?
+  defaultBranch String  @default("main")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sessions Session[]
+}
+
+model Session {
+  id String @id @default(uuid())
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  createdBy String
+  creator   User   @relation("SessionCreator", fields: [createdBy], references: [id])
+
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+
+  ydocState Bytes?
+
+  events SessionEvent[]
+}
+
+model SessionEvent {
+  id String @id @default(uuid())
+
+  sessionId String
+  session   Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  actorId String
+  actor   User   @relation("EventActor", fields: [actorId], references: [id])
+
+  type    String
+  payload Json
+
+  createdAt DateTime @default(now())
+}
