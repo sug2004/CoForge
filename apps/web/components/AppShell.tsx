@@ -83,13 +83,10 @@ const Icon = {
 };
 
 const NAV = [
-  { label: 'Dashboard',  icon: Icon.dashboard,   href: '/dashboard' },
-  { label: 'Workspaces', icon: Icon.workspaces,   href: '/dashboard' },
-  { label: 'Projects',   icon: Icon.projects,     href: '/dashboard' },
-  { label: 'Sessions',   icon: Icon.sessions,     href: '/dashboard' },
-  { label: 'AI Agents',  icon: Icon.agents,       href: '/dashboard' },
-  { label: 'Activity',   icon: Icon.activity,     href: '/dashboard' },
-  { label: 'Settings',   icon: Icon.settings,     href: '/dashboard' },
+  { label: 'Dashboard',  icon: Icon.dashboard,  href: '/dashboard',            exact: true },
+  { label: 'Workspaces', icon: Icon.workspaces,  href: '/dashboard/workspaces', exact: false, matchPrefix: '/dashboard/' },
+  { label: 'Projects',   icon: Icon.projects,    href: '/dashboard/projects',   exact: false },
+  { label: 'Sessions',   icon: Icon.sessions,    href: '/dashboard/sessions',   exact: false, matchPrefix: '/session' },
 ];
 
 const WS_COLORS = ['#6366f1', '#22c55e', '#f97316', '#3b82f6', '#ec4899', '#14b8a6'];
@@ -118,19 +115,16 @@ export default function AppShell({ children, user, editorMode = false }: {
   const router = useRouter();
   const [me, setMe] = useState<AuthUser | null>(user ?? null);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [workspaces, setWorkspaces] = useState<{ id: string; name: string }[]>([]);
 
   useEffect(() => {
     if (!me) api.auth.me().then(setMe).catch(() => {});
+    api.workspaces.list().then(setWorkspaces).catch(() => {});
   }, []);
 
   function logout() {
     localStorage.removeItem('token');
     router.push('/login');
-  }
-
-  function isActive(href: string) {
-    if (href === '/dashboard') return pathname === '/dashboard';
-    return pathname.startsWith(href);
   }
 
   return (
@@ -150,15 +144,13 @@ export default function AppShell({ children, user, editorMode = false }: {
         {/* Nav */}
         <nav style={{ display: 'flex', flexDirection: 'column', gap: 1, padding: '0 8px', flex: 1, overflowY: 'auto' }}>
           {NAV.map((item) => {
-            const active = isActive(item.href) && item.label === 'Dashboard'
-              ? pathname === '/dashboard'
-              : pathname.startsWith(item.href) && item.href !== '/dashboard';
-            // special case: Dashboard is only active on exact /dashboard
-            const isNavActive = item.label === 'Dashboard'
-              ? pathname === '/dashboard'
-              : item.label === 'Sessions'
-              ? pathname.startsWith('/session')
-              : false;
+            const isNavActive = item.exact
+              ? pathname === item.href
+              : item.label === 'Workspaces'
+              ? pathname.startsWith('/dashboard/') && !pathname.startsWith('/dashboard/projects') && !pathname.startsWith('/dashboard/sessions')
+              : item.matchPrefix
+              ? pathname.startsWith(item.matchPrefix) || pathname.startsWith(item.href)
+              : pathname.startsWith(item.href);
 
             return (
               <button
@@ -180,35 +172,24 @@ export default function AppShell({ children, user, editorMode = false }: {
             );
           })}
 
-          {/* Starred Workspaces */}
-          <div style={{ marginTop: 18, marginBottom: 4, padding: '0 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600, color: 'var(--text-3)' }}>Starred Workspaces</span>
-            <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', display: 'flex', padding: 2 }}>{Icon.plus}</button>
+          {/* Workspaces quick-list */}
+          <div style={{ marginTop: 18, marginBottom: 4, padding: '0 12px' }}>
+            <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600, color: 'var(--text-3)' }}>Workspaces</span>
           </div>
-          {[
-            { label: 'AI-Workspace', color: WS_COLORS[0] },
-            { label: 'Web Redesign', color: WS_COLORS[1] },
-            { label: 'Mobile App',   color: WS_COLORS[2] },
-            { label: 'Docs Engine',  color: WS_COLORS[3] },
-          ].map(ws => (
+          {workspaces.slice(0, 5).map((ws, i) => (
             <button
-              key={ws.label}
+              key={ws.id}
+              onClick={() => router.push('/dashboard')}
               style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 12px', borderRadius: 8, fontSize: 13, textAlign: 'left', width: '100%', background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-2)' }}
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--bg-hover)'; }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
             >
-              <div style={{ width: 20, height: 20, borderRadius: 5, background: ws.color, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
-                {ws.label.charAt(0)}
+              <div style={{ width: 20, height: 20, borderRadius: 5, background: WS_COLORS[i % WS_COLORS.length], display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
+                {ws.name.charAt(0).toUpperCase()}
               </div>
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ws.label}</span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ws.name}</span>
             </button>
           ))}
-          <button
-            onClick={() => router.push('/dashboard')}
-            style={{ padding: '4px 12px', fontSize: 12, textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)' }}
-          >
-            View all workspaces →
-          </button>
         </nav>
 
 

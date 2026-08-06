@@ -14,7 +14,14 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
 }
 
 export interface Participant { id: string; username: string; avatarUrl: string | null }
-export interface Workspace { id: string; name: string; ownerId: string; members: { userId: string; role: string }[] }
+export interface Workspace {
+  id: string;
+  name: string;
+  ownerId: string;
+  createdAt: string;
+  members: { userId: string; role: string }[];
+  projects: { id: string; name: string; repoUrl: string | null }[];
+}
 export interface Project { id: string; name: string; workspaceId: string; repoUrl: string | null; defaultBranch: string }
 export interface Session {
   id: string;

@@ -120,11 +120,16 @@ export default function ProjectPage() {
   const router = useRouter();
   const { workspaceId, projectId } = useParams<{ workspaceId: string; projectId: string }>();
   const [project, setProject] = useState<(Project & { sessions: Session[] }) | null>(null);
+  const [wsName, setWsName] = useState('');
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     api.projects.get(projectId).then(setProject).catch(() => router.push('/dashboard'));
-  }, [projectId]);
+    api.workspaces.list().then(wsList => {
+      const ws = wsList.find(w => w.id === workspaceId);
+      if (ws) setWsName(ws.name);
+    }).catch(() => {});
+  }, [projectId, workspaceId]);
 
   // re-fetch project every 10s to pick up new collaborators who joined via invite
   useEffect(() => {
@@ -162,7 +167,7 @@ export default function ProjectPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--text-3)' }}>
           <button onClick={() => router.push('/dashboard')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-2)', fontSize: 13 }}>Dashboard</button>
           <span>/</span>
-          <button onClick={() => router.push(`/dashboard/${workspaceId}`)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-2)', fontSize: 13 }}>Workspace</button>
+          <button onClick={() => router.push(`/dashboard/${workspaceId}`)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-2)', fontSize: 13 }}>{wsName || 'Workspace'}</button>
           <span>/</span>
           <span style={{ color: 'var(--text-1)' }}>{project.name}</span>
         </div>

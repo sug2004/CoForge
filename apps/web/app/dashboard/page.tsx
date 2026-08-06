@@ -41,17 +41,23 @@ export default function DashboardPage() {
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
   const [greeting, setGreeting] = useState('');
+  const [totalProjects, setTotalProjects] = useState(0);
 
   useEffect(() => {
-    api.workspaces.list().then(setWorkspaces).catch(() => router.push('/login'));
+    api.workspaces.list().then(wsList => {
+      setWorkspaces(wsList);
+      setTotalProjects(wsList.reduce((sum, ws) => sum + (ws.projects?.length ?? 0), 0));
+    }).catch(() => router.push('/login'));
     const h = new Date().getHours();
     setGreeting(h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening');
   }, []);
 
-  // re-fetch workspaces periodically to pick up newly joined workspaces via invite
   useEffect(() => {
     const interval = setInterval(() => {
-      api.workspaces.list().then(setWorkspaces).catch(() => {});
+      api.workspaces.list().then(wsList => {
+        setWorkspaces(wsList);
+        setTotalProjects(wsList.reduce((sum, ws) => sum + (ws.projects?.length ?? 0), 0));
+      }).catch(() => {});
     }, 15000);
     return () => clearInterval(interval);
   }, []);
@@ -88,7 +94,7 @@ export default function DashboardPage() {
               </h1>
               <p className="text-sm mb-4" style={{ color: 'var(--text-2)' }}>Pick up where you left off or start something new.</p>
               <button
-                onClick={() => router.push('/dashboard')}
+                onClick={() => router.push('/dashboard/sessions')}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-white"
                 style={{ background: 'var(--accent)' }}
               >
@@ -103,9 +109,9 @@ export default function DashboardPage() {
           {/* Stats */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <StatCard icon="◻" value={workspaces.length} label="Workspaces" />
-            <StatCard icon="◷" value="—" label="Live Sessions" delta="16%" />
-            <StatCard icon="👥" value="—" label="Team Members" />
-            <StatCard icon="✦" value="—" label="AI Tasks" delta="32%" />
+            <StatCard icon="◷" value={totalProjects} label="Projects" />
+            <StatCard icon="👥" value={workspaces.reduce((s, w) => s + (w.members?.length ?? 0), 0)} label="Team Members" />
+            <StatCard icon="✦" value="—" label="AI Tasks" />
           </div>
 
           {/* Workspaces table */}
@@ -114,6 +120,7 @@ export default function DashboardPage() {
               <SectionHeader title="Workspaces" />
               <form onSubmit={create} className="flex gap-2">
                 <input
+                  id="ws-name-input"
                   className="px-3 py-1.5 rounded-lg text-sm outline-none"
                   style={{ background: 'var(--bg-hover)', border: '1px solid var(--border)', color: 'var(--text-1)', width: 180 }}
                   placeholder="New workspace name"
@@ -159,7 +166,7 @@ export default function DashboardPage() {
                       </div>
                     </td>
                     <td className="px-5 py-3" style={{ color: 'var(--text-2)' }}>{ws.members?.length ?? 0}</td>
-                    <td className="px-5 py-3" style={{ color: 'var(--text-2)' }}>—</td>
+                    <td className="px-5 py-3" style={{ color: 'var(--text-2)' }}>{ws.projects?.length ?? 0}</td>
                     <td className="px-5 py-3 text-right">
                       <button
                         onClick={e => deleteWorkspace(e, ws.id)}
@@ -180,11 +187,11 @@ export default function DashboardPage() {
             <SectionHeader title="Quick Actions" />
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
               {[
-                { icon: '◫', label: 'New Workspace', sub: 'Create a new workspace', action: () => {} },
-                { icon: '◻', label: 'Create Project', sub: 'Start a new project', action: () => {} },
-                { icon: '◷', label: 'Start Session', sub: 'Collaborate in real-time', action: () => {} },
-                { icon: '⬆', label: 'Import GitHub Repo', sub: 'Connect and import', action: () => {} },
-                { icon: '👥', label: 'Invite Member', sub: 'Add people to your workspace', action: () => {} },
+                { icon: '◫', label: 'New Workspace',     sub: 'Create a new workspace',      action: () => document.getElementById('ws-name-input')?.focus() },
+                { icon: '◻', label: 'Create Project',    sub: 'Start a new project',          action: () => router.push('/dashboard/projects') },
+                { icon: '◷', label: 'Start Session',     sub: 'Collaborate in real-time',     action: () => router.push('/dashboard/sessions') },
+                { icon: '⬆', label: 'Import GitHub Repo', sub: 'Connect and import',          action: () => router.push('/dashboard/projects') },
+                { icon: '👥', label: 'Invite Member',    sub: 'Add people to your workspace', action: () => router.push('/dashboard') },
               ].map(qa => (
                 <button
                   key={qa.label}
