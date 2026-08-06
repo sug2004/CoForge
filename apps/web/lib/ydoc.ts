@@ -11,5 +11,5 @@ export function createYSession(sessionId: string) {
 
   // do NOT pre-set 'main' here — let the server sync happen first
   // fileContent is retrieved after sync in Editor.tsx
-  return { ydoc, provider };
+  return { ydoc, provider, awareness: provider.awareness };
 }

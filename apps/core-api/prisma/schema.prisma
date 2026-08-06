@@ -25,9 +25,10 @@ model User {
   updatedAt DateTime @updatedAt
 
   memberships     WorkspaceMember[]
-  ownedWorkspaces Workspace[]       @relation("WorkspaceOwner")
-  sessions        Session[]         @relation("SessionCreator")
-  events          SessionEvent[]    @relation("EventActor")
+  ownedWorkspaces Workspace[]          @relation("WorkspaceOwner")
+  sessions        Session[]            @relation("SessionCreator")
+  participations  SessionParticipant[]
+  events          SessionEvent[]       @relation("EventActor")
 }
 
 model Workspace {
@@ -88,9 +89,21 @@ model Session {
   startedAt DateTime  @default(now())
   endedAt   DateTime?
 
-  ydocState Bytes?
+  ydocState    Bytes?
+  events       SessionEvent[]
+  participants SessionParticipant[]
+}
 
-  events SessionEvent[]
+model SessionParticipant {
+  id        String   @id @default(uuid())
+  sessionId String
+  userId    String
+  joinedAt  DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, userId])
 }
 
 model SessionEvent {
