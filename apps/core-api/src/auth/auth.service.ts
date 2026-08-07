@@ -1,4 +1,8 @@
-import { Injectable, UnauthorizedException, ConflictException } from '@nestjs/common';
+import {
+  Injectable,
+  UnauthorizedException,
+  ConflictException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
@@ -12,6 +16,10 @@ export class AuthService {
 
   private sign(user: { id: string; username: string }) {
     return this.jwtService.signAsync({ sub: user.id, username: user.username });
+  }
+
+  async issueToken(user: { id: string; username: string }) {
+    return this.sign(user);
   }
 
   async register(username: string, email: string, password: string) {
@@ -32,12 +40,21 @@ export class AuthService {
     return { accessToken: await this.sign(user), user };
   }
 
-  async validateGithubUser(profile: { githubId: string; username: string; email?: string; avatarUrl?: string }) {
-    let user = await this.prisma.user.findUnique({ where: { githubId: profile.githubId } });
+  async validateGithubUser(profile: {
+    githubId: string;
+    username: string;
+    email?: string;
+    avatarUrl?: string;
+  }) {
+    let user = await this.prisma.user.findUnique({
+      where: { githubId: profile.githubId },
+    });
     if (!user) {
       // check if email account exists — link it
       user = profile.email
-        ? await this.prisma.user.findUnique({ where: { email: profile.email } }) ?? null
+        ? ((await this.prisma.user.findUnique({
+            where: { email: profile.email },
+          })) ?? null)
         : null;
 
       if (user) {
@@ -59,9 +76,17 @@ export class AuthService {
     return { accessToken: await this.sign(user), user };
   }
 
-  async linkGithub(userId: string, profile: { githubId: string; avatarUrl?: string }) {
-    const conflict = await this.prisma.user.findUnique({ where: { githubId: profile.githubId } });
-    if (conflict && conflict.id !== userId) throw new ConflictException('GitHub account already linked to another user');
+  async linkGithub(
+    userId: string,
+    profile: { githubId: string; avatarUrl?: string },
+  ) {
+    const conflict = await this.prisma.user.findUnique({
+      where: { githubId: profile.githubId },
+    });
+    if (conflict && conflict.id !== userId)
+      throw new ConflictException(
+        'GitHub account already linked to another user',
+      );
     const user = await this.prisma.user.update({
       where: { id: userId },
       data: { githubId: profile.githubId, avatarUrl: profile.avatarUrl },

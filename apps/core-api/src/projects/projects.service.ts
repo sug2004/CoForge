@@ -5,7 +5,12 @@ import { PrismaService } from '../prisma/prisma.service';
 export class ProjectsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(userId: string, workspaceId: string, name: string, repoUrl?: string) {
+  async create(
+    userId: string,
+    workspaceId: string,
+    name: string,
+    repoUrl?: string,
+  ) {
     const member = await this.prisma.workspaceMember.findUnique({
       where: { workspaceId_userId: { workspaceId, userId } },
     });
@@ -21,7 +26,9 @@ export class ProjectsService {
           include: {
             creator: { select: { id: true, username: true, avatarUrl: true } },
             participants: {
-              include: { user: { select: { id: true, username: true, avatarUrl: true } } },
+              include: {
+                user: { select: { id: true, username: true, avatarUrl: true } },
+              },
               orderBy: { joinedAt: 'asc' },
             },
           },
@@ -36,8 +43,9 @@ export class ProjectsService {
       where: { id },
       include: { workspace: { include: { members: true } } },
     });
-    const member = project.workspace.members.find(m => m.userId === userId);
-    if (!member || (member.role !== 'OWNER' && member.role !== 'EDITOR')) throw new ForbiddenException();
+    const member = project.workspace.members.find((m) => m.userId === userId);
+    if (!member || (member.role !== 'OWNER' && member.role !== 'EDITOR'))
+      throw new ForbiddenException();
     await this.prisma.project.delete({ where: { id } });
   }
 }

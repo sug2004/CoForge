@@ -23,7 +23,10 @@ export class SyncGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   handleConnection(client: Socket) {
     const sessionId = client.handshake.query.sessionId as string;
-    if (!sessionId) { client.disconnect(); return; }
+    if (!sessionId) {
+      client.disconnect();
+      return;
+    }
 
     client.join(`session:${sessionId}`);
     const doc = this.getDoc(sessionId);

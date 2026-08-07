@@ -7,6 +7,7 @@ import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
+import { SandboxRelay } from './sandbox/sandbox-relay';
 
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
@@ -23,7 +24,20 @@ function getRoom(roomName: string): Room {
   if (!rooms.has(roomName)) {
     const doc = new Y.Doc();
     const awareness = new awarenessProtocol.Awareness(doc);
-    rooms.set(roomName, { doc, awareness, conns: new Set() });
+    const room: Room = { doc, awareness, conns: new Set() };
+    rooms.set(roomName, room);
+
+    // Broadcast Y.Doc updates to all connected clients — including server-local
+    // changes (e.g. the sandbox relay writing files back), where origin is null.
+    doc.on('update', (update: Uint8Array, origin: unknown) => {
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, MESSAGE_SYNC);
+      syncProtocol.writeUpdate(encoder, update);
+      const message = encoding.toUint8Array(encoder);
+      for (const conn of room.conns) {
+        if (conn !== origin) send(conn, message);
+      }
+    });
   }
   return rooms.get(roomName)!;
 }
@@ -52,19 +66,14 @@ function handleConnection(ws: WebSocket, roomName: string) {
     if (msgType === MESSAGE_SYNC) {
       const replyEncoder = encoding.createEncoder();
       encoding.writeVarUint(replyEncoder, MESSAGE_SYNC);
-      const syncMsgType = syncProtocol.readSyncMessage(decoder, replyEncoder, room.doc, null);
+      syncProtocol.readSyncMessage(decoder, replyEncoder, room.doc, ws);
 
       // send step2 reply back to the sender
       if (encoding.length(replyEncoder) > 1) {
         send(ws, encoding.toUint8Array(replyEncoder));
       }
 
-      // if this was an update (type 2), broadcast the original message to all other conns
-      if (syncMsgType === syncProtocol.messageYjsSyncStep2 || syncMsgType === syncProtocol.messageYjsUpdate) {
-        room.conns.forEach((conn) => {
-          if (conn !== ws) send(conn, data);
-        });
-      }
+      // updates are broadcast to all other conns via the doc 'update' observer
     } else if (msgType === MESSAGE_AWARENESS) {
       awarenessProtocol.applyAwarenessUpdate(
         room.awareness,
@@ -79,17 +88,32 @@ function handleConnection(ws: WebSocket, roomName: string) {
 
   ws.on('close', () => {
     room.conns.delete(ws);
-    awarenessProtocol.removeAwarenessStates(room.awareness, [room.doc.clientID], null);
+    awarenessProtocol.removeAwarenessStates(
+      room.awareness,
+      [room.doc.clientID],
+      null,
+    );
   });
 }
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  const httpServer = http.createServer(app.getHttpAdapter().getInstance());
+  const httpServer = http.createServer(
+    app.getHttpAdapter().getInstance() as http.RequestListener,
+  );
   const wss = new WebSocketServer({ server: httpServer });
 
+  const sandboxRelay = new SandboxRelay((sessionId) => getRoom(sessionId).doc);
+
   wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
-    const roomName = (req.url ?? '/').slice(1) || 'default';
+    const pathname = (req.url ?? '/').split('?')[0];
+    if (pathname.startsWith('/sandbox/')) {
+      const sessionId = pathname.slice('/sandbox/'.length) || 'default';
+      sandboxRelay.handleConnection(ws, sessionId);
+      return;
+    }
+
+    const roomName = pathname.slice(1) || 'default';
     handleConnection(ws, roomName);
   });
 
@@ -98,4 +122,4 @@ async function bootstrap() {
     console.log('sync-server running on ws://localhost:3001');
   });
 }
-bootstrap();
+void bootstrap();

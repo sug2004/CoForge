@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import MonacoEditor from '@monaco-editor/react';
 import { createYSession } from '@/lib/ydoc';
 import { api } from '@/lib/api';
+import SandboxPanel from '@/components/SandboxPanel';
 import type { editor as MonacoEditorType } from 'monaco-editor';
 import * as Y from 'yjs';
 
@@ -127,11 +128,15 @@ type TreeNode =
 function buildTree(paths: string[]): TreeNode[] {
   const root: TreeNode[] = [];
   for (const p of [...paths].sort()) {
-    const parts = p.split('/');
+    const isDir = p.endsWith('/');
+    const raw = isDir ? p.slice(0, -1) : p;
+    if (!raw) continue;
+    const parts = raw.split('/');
     let nodes = root;
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
-      if (i === parts.length - 1) {
+      const last = i === parts.length - 1;
+      if (last && !isDir) {
         nodes.push({ kind: 'file', path: p, name: part });
       } else {
         let dir = nodes.find(n => n.kind === 'dir' && n.name === part) as Extract<TreeNode, { kind: 'dir' }> | undefined;
@@ -143,9 +148,10 @@ function buildTree(paths: string[]): TreeNode[] {
   return root;
 }
 
-function TreeNodes({ nodes, active, onSelect, onRename, onDelete, depth }: {
-  nodes: TreeNode[]; active: string; onSelect: (p: string) => void;
-  onRename: (p: string) => void; onDelete: (p: string) => void; depth: number;
+function TreeNodes({ nodes, active, currentDir, onSelect, onSelectFolder, onRename, onDelete, depth, basePath }: {
+  nodes: TreeNode[]; active: string; currentDir: string;
+  onSelect: (p: string) => void; onSelectFolder: (p: string) => void;
+  onRename: (p: string) => void; onDelete: (p: string) => void; depth: number; basePath: string;
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [hovered, setHovered] = useState<string | null>(null);
@@ -200,18 +206,25 @@ function TreeNodes({ nodes, active, onSelect, onRename, onDelete, depth }: {
         ) : (
           <div key={node.name}>
             <button
-              onClick={() => setCollapsed(s => { const n = new Set(s); n.has(node.name) ? n.delete(node.name) : n.add(node.name); return n; })}
+              onClick={() => {
+                const dirPath = `${basePath}${node.name}/`;
+                setCollapsed(s => { const n = new Set(s); n.has(node.name) ? n.delete(node.name) : n.add(node.name); return n; });
+                onSelectFolder(dirPath);
+              }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 4,
                 width: '100%', textAlign: 'left',
                 paddingLeft: 8 + indent, paddingRight: 8,
                 paddingTop: 3, paddingBottom: 3,
                 fontSize: 11, fontFamily: 'JetBrains Mono, monospace', fontWeight: 600,
-                color: T.accent, background: 'transparent', border: 'none', cursor: 'pointer',
+                color: T.accent,
+                background: currentDir === `${basePath}${node.name}/` ? T.hover : 'transparent',
+                border: 'none', cursor: 'pointer',
                 userSelect: 'none', letterSpacing: '0.03em',
+                borderLeft: currentDir === `${basePath}${node.name}/` ? `2px solid ${T.accent}` : '2px solid transparent',
               }}
               onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = T.hover; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
+              onMouseLeave={e => { if (currentDir !== `${basePath}${node.name}/`) (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
             >
               <span style={{ fontSize: 9, display: 'inline-block', width: 10, textAlign: 'center', flexShrink: 0 }}>
                 {collapsed.has(node.name) ? '▶' : '▼'}
@@ -220,7 +233,7 @@ function TreeNodes({ nodes, active, onSelect, onRename, onDelete, depth }: {
               <span style={{ letterSpacing: '0.02em' }}>{node.name}</span>
             </button>
             {!collapsed.has(node.name) && (
-              <TreeNodes nodes={node.children} active={active} onSelect={onSelect} onRename={onRename} onDelete={onDelete} depth={depth + 1} />
+              <TreeNodes nodes={node.children} active={active} currentDir={currentDir} onSelect={onSelect} onSelectFolder={onSelectFolder} onRename={onRename} onDelete={onDelete} depth={depth + 1} basePath={`${basePath}${node.name}/`} />
             )}
           </div>
         )
@@ -229,9 +242,11 @@ function TreeNodes({ nodes, active, onSelect, onRename, onDelete, depth }: {
   );
 }
 
-function FileTree({ paths, active, onSelect, onNewFile, onRename, onDelete }: {
-  paths: string[]; active: string; onSelect: (p: string) => void;
-  onNewFile: () => void; onRename: (p: string) => void; onDelete: (p: string) => void;
+function FileTree({ paths, active, currentDir, onSelect, onSelectFolder, onNewFile, onNewFolder, onRename, onDelete }: {
+  paths: string[]; active: string; currentDir: string;
+  onSelect: (p: string) => void; onSelectFolder: (p: string) => void;
+  onNewFile: () => void; onNewFolder: () => void;
+  onRename: (p: string) => void; onDelete: (p: string) => void;
 }) {
   const tree = buildTree(paths);
   const [width, setWidth] = useState(210);
@@ -261,11 +276,14 @@ function FileTree({ paths, active, onSelect, onNewFile, onRename, onDelete }: {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width, flexShrink: 0, background: T.surface, borderRight: `1px solid ${T.border}`, position: 'relative' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', borderBottom: `1px solid ${T.border}` }}>
-        <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 700, color: T.accent, fontFamily: 'JetBrains Mono, monospace' }}>Explorer</span>
-        <button onClick={onNewFile} title="New file" style={{ color: T.accent, background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: '0 2px' }}>+</button>
+        <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 700, color: T.accent, fontFamily: 'JetBrains Mono, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Explorer{currentDir ? ` / ${currentDir}` : ''}</span>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button onClick={onNewFolder} title="New folder" style={{ color: T.accent, background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: '0 2px' }}>📁+</button>
+          <button onClick={onNewFile} title="New file" style={{ color: T.accent, background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: '0 2px' }}>+</button>
+        </div>
       </div>
       <div style={{ overflowY: 'auto', flex: 1, paddingTop: 4, paddingBottom: 4 }}>
-        <TreeNodes nodes={tree} active={active} onSelect={onSelect} onRename={onRename} onDelete={onDelete} depth={0} />
+        <TreeNodes nodes={tree} active={active} currentDir={currentDir} onSelect={onSelect} onSelectFolder={onSelectFolder} onRename={onRename} onDelete={onDelete} depth={0} basePath="" />
       </div>
       {/* drag handle */}
       <div
@@ -399,6 +417,7 @@ function dedupeParticipants(list: DbParticipant[]): DbParticipant[] {
 
 export default function Editor({ sessionId }: { sessionId: string }) {
   const [files, setFiles] = useState<string[]>([]);
+  const [currentDir, setCurrentDir] = useState('');
   const [activeFile, setActiveFile] = useState<string>('');
   const [language, setLanguage] = useState('plaintext');
   const [cloning, setCloning] = useState(false);
@@ -575,13 +594,29 @@ export default function Editor({ sessionId }: { sessionId: string }) {
   }, [ydocRef.current]);
 
   function handleNewFile() {
-    const name = prompt('File name (e.g. src/utils.ts)');
+    const name = prompt(`File name in ${currentDir || 'root'}`);
     if (!name?.trim()) return;
+    const clean = name.trim().replace(/^\/+|\/+$/g, '');
+    if (!clean) return;
     const ydoc = ydocRef.current;
     if (!ydoc) return;
+    const fullPath = currentDir ? `${currentDir}${clean}` : clean;
     const filesMap = ydoc.getMap<Y.Text>('files');
-    if (!filesMap.has(name)) ydoc.transact(() => filesMap.set(name, new Y.Text()));
-    switchToFile(name);
+    if (!filesMap.has(fullPath)) ydoc.transact(() => filesMap.set(fullPath, new Y.Text()));
+    switchToFile(fullPath);
+  }
+
+  function handleNewFolder() {
+    const name = prompt(`Folder name in ${currentDir || 'root'}`);
+    if (!name?.trim()) return;
+    const clean = name.trim().replace(/^\/+|\/+$/g, '');
+    if (!clean) return;
+    const ydoc = ydocRef.current;
+    if (!ydoc) return;
+    const folderPath = `${currentDir}${clean}/`;
+    const filesMap = ydoc.getMap<Y.Text>('files');
+    ydoc.transact(() => filesMap.set(folderPath, new Y.Text()));
+    setCurrentDir(folderPath);
   }
 
   function handleRename(oldPath: string) {
@@ -666,8 +701,11 @@ export default function Editor({ sessionId }: { sessionId: string }) {
         <FileTree
           paths={files}
           active={activeFile}
+          currentDir={currentDir}
           onSelect={switchToFile}
+          onSelectFolder={setCurrentDir}
           onNewFile={handleNewFile}
+          onNewFolder={handleNewFolder}
           onRename={handleRename}
           onDelete={handleDelete}
         />
@@ -690,6 +728,7 @@ export default function Editor({ sessionId }: { sessionId: string }) {
           keepCurrentModel
         />
       </div>
+      <SandboxPanel sessionId={sessionId} />
     </div>
   );
 }

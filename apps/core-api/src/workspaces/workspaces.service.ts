@@ -22,14 +22,23 @@ export class WorkspacesService {
     });
   }
 
-  async addMember(workspaceId: string, requesterId: string, userId: string, role: 'EDITOR' | 'VIEWER') {
+  async addMember(
+    workspaceId: string,
+    requesterId: string,
+    userId: string,
+    role: 'EDITOR' | 'VIEWER',
+  ) {
     await this.assertOwner(workspaceId, requesterId);
-    return this.prisma.workspaceMember.create({ data: { workspaceId, userId, role } });
+    return this.prisma.workspaceMember.create({
+      data: { workspaceId, userId, role },
+    });
   }
 
   async removeMember(workspaceId: string, requesterId: string, userId: string) {
     await this.assertOwner(workspaceId, requesterId);
-    await this.prisma.workspaceMember.deleteMany({ where: { workspaceId, userId } });
+    await this.prisma.workspaceMember.deleteMany({
+      where: { workspaceId, userId },
+    });
   }
 
   async delete(workspaceId: string, userId: string) {

@@ -1,4 +1,12 @@
-import { Controller, Get, Post, Body, Req, Res, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import { Response } from 'express';
 
 import { GithubAuthGuard } from './github/github-auth.guard';
@@ -14,8 +22,18 @@ export class AuthController {
     @Body() body: { username: string; email: string; password: string },
     @Res() res: Response,
   ) {
-    const { accessToken, user } = await this.authService.register(body.username, body.email, body.password);
-    res.cookie('token', accessToken, { httpOnly: true, sameSite: 'lax', path: '/' }).json({ user });
+    const { accessToken, user } = await this.authService.register(
+      body.username,
+      body.email,
+      body.password,
+    );
+    res
+      .cookie('token', accessToken, {
+        httpOnly: true,
+        sameSite: 'lax',
+        path: '/',
+      })
+      .json({ user });
   }
 
   @Post('auth/login')
@@ -23,8 +41,17 @@ export class AuthController {
     @Body() body: { email: string; password: string },
     @Res() res: Response,
   ) {
-    const { accessToken, user } = await this.authService.login(body.email, body.password);
-    res.cookie('token', accessToken, { httpOnly: true, sameSite: 'lax', path: '/' }).json({ user });
+    const { accessToken, user } = await this.authService.login(
+      body.email,
+      body.password,
+    );
+    res
+      .cookie('token', accessToken, {
+        httpOnly: true,
+        sameSite: 'lax',
+        path: '/',
+      })
+      .json({ user });
   }
 
   @Get('auth/github')
@@ -36,7 +63,11 @@ export class AuthController {
   async githubCallback(@Req() req, @Res() res: Response) {
     const { accessToken } = await this.authService.validateGithubUser(req.user);
     res
-      .cookie('token', accessToken, { httpOnly: true, sameSite: 'lax', path: '/' })
+      .cookie('token', accessToken, {
+        httpOnly: true,
+        sameSite: 'lax',
+        path: '/',
+      })
       .redirect(process.env.FRONTEND_URL + '/dashboard');
   }
 
@@ -60,5 +91,12 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   me(@Req() req) {
     return req.user;
+  }
+
+  @Get('me/token')
+  @UseGuards(JwtAuthGuard)
+  async meToken(@Req() req: { user: { id: string; username: string } }) {
+    const accessToken = await this.authService.issueToken(req.user);
+    return { accessToken };
   }
 }

@@ -1,0 +1,4 @@
+allowBuilds:
+  cpu-features: true
+  ssh2: true
+  unrs-resolver: true

@@ -3,10 +3,7 @@ import { PassportStrategy } from '@nestjs/passport';
 import { Strategy, Profile } from 'passport-github2';
 
 @Injectable()
-export class GithubStrategy extends PassportStrategy(
-  Strategy,
-  'github',
-) {
+export class GithubStrategy extends PassportStrategy(Strategy, 'github') {
   constructor() {
     super({
       clientID: process.env.GITHUB_CLIENT_ID!,
@@ -16,11 +13,7 @@ export class GithubStrategy extends PassportStrategy(
     });
   }
 
-  async validate(
-    accessToken: string,
-    refreshToken: string,
-    profile: Profile,
-  ) {
+  async validate(accessToken: string, refreshToken: string, profile: Profile) {
     const email = profile.emails?.[0]?.value;
 
     return {

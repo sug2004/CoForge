@@ -1,4 +1,14 @@
-import { Controller, Get, Post, Delete, Body, Param, Req, UseGuards, HttpCode } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Delete,
+  Body,
+  Param,
+  Req,
+  UseGuards,
+  HttpCode,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt/jwt-auth.guard';
 import { ProjectsService } from './projects.service';
 
@@ -8,8 +18,17 @@ export class ProjectsController {
   constructor(private readonly projects: ProjectsService) {}
 
   @Post('workspaces/:id/projects')
-  create(@Req() req, @Param('id') workspaceId: string, @Body() body: { name: string; repoUrl?: string }) {
-    return this.projects.create(req.user.id, workspaceId, body.name, body.repoUrl);
+  create(
+    @Req() req,
+    @Param('id') workspaceId: string,
+    @Body() body: { name: string; repoUrl?: string },
+  ) {
+    return this.projects.create(
+      req.user.id,
+      workspaceId,
+      body.name,
+      body.repoUrl,
+    );
   }
 
   @Get('projects/:id')
