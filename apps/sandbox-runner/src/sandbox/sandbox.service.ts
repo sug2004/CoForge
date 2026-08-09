@@ -3,7 +3,6 @@ import {
   OnModuleInit,
   OnModuleDestroy,
   BadRequestException,
-  ConflictException,
   Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -11,8 +10,8 @@ import Docker from 'dockerode';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { PassThrough } from 'stream';
-import { Response } from 'express';
+import * as net from 'net';
+import { Duplex } from 'stream';
 import {
   CONTAINER_IMAGE,
   CONTAINER_NAME_PREFIX,
@@ -20,14 +19,25 @@ import {
   CONTAINER_CPUS,
   CONTAINER_PIDS_LIMIT,
   WORKSPACE_DIR,
-  DEFAULT_RUN_COMMAND_TIMEOUT_MS,
+  SANDBOX_NETWORK_NAME,
+  SETUP_PACKAGES,
   DEFAULT_MAX_CONTAINERS,
   DEFAULT_IDLE_TIMEOUT_MS,
   SWEEPER_INTERVAL_MS,
   IGNORED_DIRS,
-  MAX_FILE_BYTES,
+  PREVIEW_PORTS,
 } from './constants';
-import { writeNdjson } from './ndjson';
+
+export interface FileDiff {
+  files?: Record<string, string>;
+  deleted?: string[];
+}
+
+export interface ShellSession {
+  exec: Docker.Exec;
+  stream: Duplex;
+  workspaceDir: string;
+}
 
 interface SandboxEntry {
   container: Docker.Container;
@@ -35,8 +45,27 @@ interface SandboxEntry {
   workspaceDir: string;
   createdAt: number;
   lastUsedAt: number;
-  running: { exec: Docker.Exec; timeout: NodeJS.Timeout } | null;
+  provisioned: boolean;
+  shell: ShellSession | null;
 }
+
+interface PreviewBridge {
+  server: net.Server;
+  hostPort: number;
+}
+
+// Runs inside the sandbox container: pipes a TCP connection to the app's
+// localhost port so the runner can reach servers that bind only to 127.0.0.1
+// (e.g. Vite's default). Uses stdin/stdout over the exec hijack stream.
+const BRIDGE_SCRIPT = `
+const net = require('net');
+const port = parseInt(process.argv[1], 10);
+const sock = net.connect(port, '127.0.0.1');
+process.stdin.pipe(sock);
+sock.pipe(process.stdout);
+sock.on('error', () => process.exit(1));
+process.stdin.on('error', () => process.exit(1));
+`;
 
 @Injectable()
 export class SandboxService implements OnModuleInit, OnModuleDestroy {
@@ -44,6 +73,7 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
   private readonly docker: Docker;
   private readonly entries = new Map<string, SandboxEntry>();
   private readonly pendingCreates = new Map<string, Promise<SandboxEntry>>();
+  private readonly previewBridges = new Map<string, PreviewBridge>();
   private readonly maxContainers: number;
   private readonly idleTimeoutMs: number;
   private readonly workspaceRoot: string;
@@ -84,109 +114,226 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
         'Docker daemon not reachable — containers will fail to create',
       );
     }
+    try {
+      await this.docker.createNetwork({
+        Name: SANDBOX_NETWORK_NAME,
+        Driver: 'bridge',
+        CheckDuplicate: true,
+      });
+      this.log.log(`Created network ${SANDBOX_NETWORK_NAME}`);
+    } catch (e) {
+      const statusCode = (e as { statusCode?: number })?.statusCode;
+      if (statusCode !== 409) {
+        this.log.warn(`create network failed: ${(e as Error)?.message}`);
+      }
+    }
   }
 
   onModuleDestroy() {
     if (this.sweeper) clearInterval(this.sweeper);
+    for (const key of [...this.previewBridges.keys()]) {
+      const bridge = this.previewBridges.get(key);
+      this.previewBridges.delete(key);
+      try {
+        bridge?.server.close();
+      } catch {
+        // ignore
+      }
+    }
+    for (const entry of this.entries.values()) {
+      try {
+        entry.shell?.stream.destroy();
+      } catch {
+        // ignore
+      }
+    }
   }
 
-  async exec(
-    sessionId: string,
-    command: string | undefined,
-    files: Record<string, string> | undefined,
-    timeoutMs: number | undefined,
-    res: Response,
-  ) {
-    if (!command?.trim()) throw new BadRequestException('command is required');
-
+  async openShell(sessionId: string): Promise<ShellSession> {
     const entry = await this.ensureContainer(sessionId);
-    if (entry.running) throw new ConflictException('busy');
-
     entry.lastUsedAt = Date.now();
+    if (!entry.provisioned) await this.provision(entry);
 
-    if (files && Object.keys(files).length > 0) {
-      await this.syncFiles(entry, files);
+    // share the live shell — a reconnect or second tab attaches to the same
+    // bash so cwd/env and background processes persist across disconnects
+    if (entry.shell && !entry.shell.stream.destroyed) {
+      return entry.shell;
     }
 
     const exec = await entry.container.exec({
-      Cmd: ['sh', '-c', command],
+      Cmd: ['/bin/bash'],
+      AttachStdin: true,
       AttachStdout: true,
       AttachStderr: true,
-      Tty: false,
+      Tty: true,
       User: 'node',
       WorkingDir: WORKSPACE_DIR,
+      Env: ['TERM=xterm-256color'],
     });
+    const stream = await exec.start({ Tty: true, stdin: true, hijack: true });
+    entry.shell = { exec, stream, workspaceDir: entry.workspaceDir };
+    return entry.shell;
+  }
 
-    const stream = await exec.start({ hijack: true, stdin: false });
+  shellClosed(sessionId: string, stream: Duplex) {
+    const entry = this.entries.get(sessionId);
+    if (entry?.shell?.stream === stream) entry.shell = null;
+  }
 
-    const stdout = new PassThrough();
-    const stderr = new PassThrough();
-    this.docker.modem.demuxStream(stream, stdout, stderr);
+  async resizeShell(sessionId: string, cols: number, rows: number) {
+    const entry = this.entries.get(sessionId);
+    if (!entry?.shell) return;
+    const h = Math.max(2, Math.round(rows || 24));
+    const w = Math.max(2, Math.round(cols || 80));
+    try {
+      await entry.shell.exec.resize({ h, w });
+    } catch {
+      // container may be gone
+    }
+  }
 
-    const execId = exec.id;
+  async writeFiles(sessionId: string, diff: FileDiff) {
+    const entry = await this.ensureContainer(sessionId);
+    await this.applyFileDiff(entry, diff);
+  }
 
-    let timedOut = false;
-    let ended = false;
-    let exitCode: number | null = null;
-    let exitCodeRead = false;
+  // ── preview (published container port → host port) ────────────────────────
+  // Dev-server ports are published to random 127.0.0.1 host ports at container
+  // creation (see createContainer). Docker Desktop hosts cannot reach bridge
+  // network container IPs, so we resolve the host port via the Docker API
+  // instead of running a host-side TCP proxy.
 
-    const timeoutMsValue = timeoutMs ?? DEFAULT_RUN_COMMAND_TIMEOUT_MS;
+  async openPreview(
+    sessionId: string,
+    containerPort: number,
+  ): Promise<{ hostPort: number }> {
+    const entry = await this.ensureContainer(sessionId);
+    // Always use the exec bridge: it connects to 127.0.0.1 *inside* the
+    // container, so it works whether the app binds to 0.0.0.0 or only to
+    // localhost (Vite's default). A connectivity probe of the published port
+    // can't work — Docker's userland proxy accepts the TCP handshake even
+    // when the container-side listener is absent.
+    const hostPort = await this.startExecBridge(entry, containerPort);
+    return { hostPort };
+  }
 
-    async function gracefulFinish() {
-      if (ended) return;
-      ended = true;
-      if (timeoutHandle) clearTimeout(timeoutHandle);
-      if (entry.running?.exec === exec) entry.running = null;
-
-      if (!exitCodeRead) {
-        exitCodeRead = true;
-        try {
-          const info = await exec.inspect();
-          exitCode = info.ExitCode;
-        } catch {
-          // exec may already be gone — exitCode stays null
-        }
-      }
-
-      if (!res.writableEnded) {
-        writeNdjson(res, { stream: 'exit', exitCode, timeout: timedOut });
-        res.end();
+  async listPublishedPorts(
+    sessionId: string,
+  ): Promise<Array<{ port: number; hostPort: number; url: string }>> {
+    const entry = await this.ensureContainer(sessionId);
+    const info = await entry.container.inspect();
+    const ports: Array<{ port: number; hostPort: number; url: string }> = [];
+    for (const p of PREVIEW_PORTS) {
+      const published =
+        info.NetworkSettings?.Ports?.[`${p}/tcp`] ?? [];
+      const binding =
+        published.find((b) => b.HostIp === '127.0.0.1') ?? published[0];
+      if (binding?.HostPort) {
+        const hostPort = Number.parseInt(binding.HostPort, 10);
+        ports.push({ port: p, hostPort, url: `http://localhost:${hostPort}` });
       }
     }
+    return ports;
+  }
 
-    const timeoutHandle = setTimeout(() => {
-      timedOut = true;
-      // Write exit event and close response BEFORE killing the exec,
-      // so the client receives a clean response before the hijacked stream is torn down.
-      void gracefulFinish().finally(() => {
-        this.killExec(execId).catch(() => {});
-      });
-    }, timeoutMsValue);
-    timeoutHandle.unref();
-    entry.running = { exec, timeout: timeoutHandle };
+  closePreview(sessionId: string) {
+    const entry = this.entries.get(sessionId);
+    if (!entry) return;
+    for (const [key, bridge] of [...this.previewBridges]) {
+      if (key.startsWith(`${entry.containerId}:`)) {
+        this.previewBridges.delete(key);
+        try {
+          bridge.server.close();
+        } catch {
+          // already closed
+        }
+      }
+    }
+  }
 
-    res.on('close', () => {
-      if (!ended) this.killExec(execId).catch(() => {});
+  private async startExecBridge(
+    entry: SandboxEntry,
+    containerPort: number,
+  ): Promise<number> {
+    const key = `${entry.containerId}:${containerPort}`;
+    const existing = this.previewBridges.get(key);
+    if (existing) return existing.hostPort;
+
+    const server = net.createServer((socket) => {
+      let closed = false;
+      let execStream: Duplex | null = null;
+
+      const close = () => {
+        if (closed) return;
+        closed = true;
+        try {
+          socket.destroy();
+        } catch {
+          // ignore
+        }
+        try {
+          execStream?.destroy();
+        } catch {
+          // ignore
+        }
+      };
+
+      const run = async () => {
+        try {
+          const exec = await entry.container.exec({
+            Cmd: ['node', '-e', BRIDGE_SCRIPT, String(containerPort)],
+            AttachStdin: true,
+            AttachStdout: true,
+            AttachStderr: true,
+            Tty: false,
+            User: 'node',
+          });
+          execStream = await exec.start({ hijack: true, stdin: true });
+
+          // docker exec with Tty:false multiplexes stdout/stderr as frames:
+          // [type:1B, 0,0,0, size:4B BE][payload]
+          let pending: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+          execStream.on('data', (chunk: Buffer) => {
+            pending = pending.length
+              ? Buffer.concat([pending, chunk])
+              : chunk;
+            while (pending.length >= 8) {
+              const type = pending[0];
+              const size = pending.readUInt32BE(4);
+              if (pending.length < 8 + size) break;
+              const payload = pending.subarray(8, 8 + size);
+              pending = pending.subarray(8 + size);
+              if (type === 1 && !closed) socket.write(payload);
+            }
+          });
+          execStream.on('end', close);
+          execStream.on('close', close);
+          execStream.on('error', close);
+
+          socket.on('data', (d) => {
+            if (execStream && !closed) execStream.write(d);
+          });
+          socket.on('close', close);
+          socket.on('error', close);
+        } catch {
+          close();
+        }
+      };
+      void run();
     });
 
-    const relabel = (streamType: 'stdout' | 'stderr') => (chunk: Buffer) => {
-      if (ended) return;
-      writeNdjson(res, { stream: streamType, chunk: chunk.toString() });
-    };
-
-    stdout.on('data', relabel('stdout'));
-    stderr.on('data', relabel('stderr'));
-
-    const onStreamDone = () => {
-      void gracefulFinish();
-    };
-    stream.on('close', onStreamDone);
-    stream.on('end', onStreamDone);
-    stream.on('error', onStreamDone);
-
-    stdout.on('end', () => {
-      if (stderr.destroyed) void gracefulFinish();
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => resolve());
     });
+    const hostPort = (server.address() as net.AddressInfo).port;
+    this.previewBridges.set(key, { server, hostPort });
+    return hostPort;
+  }
+
+  async listFiles(sessionId: string): Promise<Record<string, string>> {
+    const entry = await this.ensureContainer(sessionId);
+    return this.readWorkspace(entry.workspaceDir, '');
   }
 
   private async ensureContainer(sessionId: string): Promise<SandboxEntry> {
@@ -226,7 +373,7 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
     const workspaceDir = path.join(this.workspaceRoot, sessionId);
     await fs.mkdir(workspaceDir, { recursive: true });
 
-    const container = await this.docker.createContainer({
+    const spec = () => ({
       name,
       Image: CONTAINER_IMAGE,
       Cmd: ['sleep', 'infinity'],
@@ -234,15 +381,52 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
       WorkingDir: WORKSPACE_DIR,
       Tty: false,
       OpenStdin: false,
+      NetworkingConfig: {
+        EndpointsConfig: { [SANDBOX_NETWORK_NAME]: {} },
+      },
       HostConfig: {
+        // tini as PID 1 so exited exec processes (shells, bridges, builds)
+        // get reaped instead of piling up as zombies against the pids limit
+        Init: true,
         Memory: CONTAINER_MEMORY,
         NanoCpus: CONTAINER_CPUS * 1e9,
         PidsLimit: CONTAINER_PIDS_LIMIT,
-        NetworkMode: 'none',
         Binds: [`${workspaceDir}:${WORKSPACE_DIR}`],
+        PortBindings: Object.fromEntries(
+          PREVIEW_PORTS.map((p) => [
+            `${p}/tcp`,
+            [{ HostIp: '127.0.0.1', HostPort: '' }],
+          ]),
+        ),
       },
+      ExposedPorts: Object.fromEntries(
+        PREVIEW_PORTS.map((p) => [`${p}/tcp`, {}]),
+      ),
     });
-    await container.start();
+
+    let container: Docker.Container;
+    try {
+      container = await this.docker.createContainer(spec());
+      await container.start();
+    } catch (e) {
+      const statusCode = (e as { statusCode?: number })?.statusCode;
+      if (statusCode !== 409) throw e;
+      // a container from a previous process still holds the name
+      const stale = this.docker.getContainer(name);
+      const staleInfo = await stale.inspect();
+      const networks = Object.keys(staleInfo.NetworkSettings?.Networks ?? {});
+      if (!networks.includes(SANDBOX_NETWORK_NAME)) {
+        // stale container predates the network fix — drop it and recreate
+        await stale.remove({ force: true });
+        container = await this.docker.createContainer(spec());
+        await container.start();
+      } else {
+        container = stale;
+        if (!staleInfo.State.Running) {
+          await container.start();
+        }
+      }
+    }
     const info = await container.inspect();
 
     this.log.log(
@@ -255,15 +439,54 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
       workspaceDir,
       createdAt: Date.now(),
       lastUsedAt: Date.now(),
-      running: null,
+      provisioned: false,
+      shell: null,
     };
     this.entries.set(sessionId, entry);
     return entry;
   }
 
-  private async syncFiles(entry: SandboxEntry, files: Record<string, string>) {
-    // Write all files from the Y.Doc into the workspace
-    for (const [relPath, content] of Object.entries(files)) {
+  private async provision(entry: SandboxEntry) {
+    const cmd = `apt-get update -qq && apt-get install -y -qq --no-install-recommends ${SETUP_PACKAGES} && rm -rf /var/lib/apt/lists/*`;
+    try {
+      const exec = await entry.container.exec({
+        Cmd: ['sh', '-c', cmd],
+        AttachStdout: true,
+        AttachStderr: true,
+        Tty: false,
+        User: 'root',
+      });
+      const stream = await exec.start({ hijack: false, stdin: false });
+      let out = '';
+      stream.on('data', (c: Buffer) => {
+        out += c.toString();
+      });
+      await new Promise<void>((resolve, reject) => {
+        stream.on('end', () => resolve());
+        stream.on('close', () => resolve());
+        stream.on('error', reject);
+      });
+      const info = await exec.inspect();
+      if (info.ExitCode !== 0) {
+        this.log.warn(
+          `provision failed (exit ${info.ExitCode}): ${out.slice(-2000)}`,
+        );
+      } else {
+        entry.provisioned = true;
+        this.log.log(
+          `Provisioned tools for container ${entry.containerId.slice(0, 12)}`,
+        );
+      }
+    } catch (e) {
+      this.log.warn(`provision error: ${(e as Error)?.message}`);
+    }
+  }
+
+  private async applyFileDiff(entry: SandboxEntry, diff: FileDiff) {
+    // Write only the keys in the diff — never sweep the whole workspace, so
+    // files produced by the sandbox (lockfiles, build output) survive until
+    // they are explicitly deleted from the Y.Doc.
+    for (const [relPath, content] of Object.entries(diff.files ?? {})) {
       const safe = this.sanitizeRelPath(relPath);
       const full = path.join(entry.workspaceDir, safe);
       try {
@@ -280,19 +503,11 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
         // skip the problematic file rather than aborting the whole sync
       }
     }
-    // Delete workspace files that are no longer in the Y.Doc
-    const current = await this.readWorkspace(entry.workspaceDir, '');
-    for (const relPath of Object.keys(current)) {
-      if (relPath.endsWith('/')) continue; // empty-dir marker — not a target for unlink
-      if (!(relPath in files)) {
-        await fs.unlink(path.join(entry.workspaceDir, relPath)).catch(() => {});
-      }
+    for (const relPath of diff.deleted ?? []) {
+      const safe = this.sanitizeRelPath(relPath);
+      const full = path.join(entry.workspaceDir, safe);
+      await fs.rm(full, { recursive: true, force: true }).catch(() => {});
     }
-  }
-
-  async listFiles(sessionId: string): Promise<Record<string, string>> {
-    const entry = await this.ensureContainer(sessionId);
-    return this.readWorkspace(entry.workspaceDir, '');
   }
 
   private async readWorkspace(
@@ -314,8 +529,6 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
           Object.assign(files, subFiles);
         }
       } else if (entry.isFile()) {
-        const stat = await fs.stat(full);
-        if (stat.size > MAX_FILE_BYTES) continue;
         try {
           const content = await fs.readFile(full, 'utf-8');
           if (content.includes('\u0000')) continue;
@@ -345,22 +558,21 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
 
     const idle: string[] = [];
     for (const [id, entry] of this.entries) {
-      if (!entry.running && now - entry.lastUsedAt > this.idleTimeoutMs) {
+      if (now - entry.lastUsedAt > this.idleTimeoutMs) {
         idle.push(id);
       }
     }
     for (const id of idle) {
       const entry = this.entries.get(id)!;
-      if (entry.running) continue;
       this.log.log(`Evicting idle container for session ${id}`);
       await this.destroyEntry(entry);
       this.entries.delete(id);
     }
 
     while (this.entries.size > this.maxContainers) {
-      const candidates = [...this.entries.entries()]
-        .filter(([, e]) => !e.running)
-        .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
+      const candidates = [...this.entries.entries()].sort(
+        (a, b) => a[1].lastUsedAt - b[1].lastUsedAt,
+      );
       if (candidates.length === 0) break;
       const [id, entry] = candidates[0];
       this.log.log(
@@ -371,33 +583,71 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private killExec(execId: string): Promise<void> {
-    return new Promise((resolve) => {
-      const modem = this.docker.modem as unknown as {
-        dial(opts: Record<string, unknown>, cb: () => void): void;
-      };
-      modem.dial(
-        {
-          path: `/exec/${execId}/kill`,
-          method: 'POST',
-          body: JSON.stringify({ signal: 'SIGKILL' }),
-          statusCodes: { 200: true, 204: true, 404: true, 409: true },
-        },
-        () => resolve(),
-      );
-    });
-  }
-
   private async destroyEntry(entry: SandboxEntry) {
     try {
-      await entry.container.stop({ t: 1 });
+      entry.shell?.stream.destroy();
+    } catch {
+      // ignore
+    }
+    try {
+      await entry.container.stop({ t: 3 });
     } catch {
       // container may already be stopped
     }
     try {
       await entry.container.remove({ force: true });
     } catch {
-      // container may already be gone
+      // already gone
     }
+  }
+
+  // Called when the session/project is deleted: removes the container (even
+  // if it was adopted after a runner restart) plus the host workspace dir.
+  async destroyContainer(sessionId: string) {
+    const entry = this.entries.get(sessionId);
+    if (entry) {
+      await this.destroyEntry(entry);
+      this.entries.delete(sessionId);
+      this.pendingCreates.delete(sessionId);
+    } else {
+      try {
+        const container = this.docker.getContainer(
+          `${CONTAINER_NAME_PREFIX}-${sessionId}`,
+        );
+        const info = await container.inspect();
+        if (info) {
+          try {
+            await container.stop({ t: 3 });
+          } catch {
+            // already stopped
+          }
+          try {
+            await container.remove({ force: true });
+          } catch {
+            // already gone
+          }
+        }
+      } catch {
+        // no container for this session — nothing to do
+      }
+    }
+    for (const key of [...this.previewBridges.keys()]) {
+      const bridge = this.previewBridges.get(key);
+      if (bridge && key.startsWith(entry?.containerId ?? `${CONTAINER_NAME_PREFIX}-${sessionId}:`)) {
+        this.previewBridges.delete(key);
+        try {
+          bridge.server.close();
+        } catch {
+          // already closed
+        }
+      }
+    }
+    const wsDir = path.join(this.workspaceRoot, sessionId);
+    try {
+      await fs.rm(wsDir, { recursive: true, force: true });
+    } catch {
+      // dir may already be gone
+    }
+    this.log.log(`Destroyed sandbox for session ${sessionId}`);
   }
 }

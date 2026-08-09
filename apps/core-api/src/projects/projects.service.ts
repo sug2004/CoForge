@@ -1,6 +1,20 @@
 import { Injectable, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
+const RUNNER_URL =
+  process.env.SANDBOX_RUNNER_URL ?? 'http://localhost:3004';
+
+async function destroySandbox(sessionId: string) {
+  try {
+    await fetch(
+      `${RUNNER_URL}/sandbox/${encodeURIComponent(sessionId)}`,
+      { method: 'DELETE' },
+    );
+  } catch {
+    // best effort — runner may be down
+  }
+}
+
 @Injectable()
 export class ProjectsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -41,11 +55,18 @@ export class ProjectsService {
   async delete(id: string, userId: string) {
     const project = await this.prisma.project.findUniqueOrThrow({
       where: { id },
-      include: { workspace: { include: { members: true } } },
+      include: {
+        workspace: { include: { members: true } },
+        sessions: { select: { id: true } },
+      },
     });
     const member = project.workspace.members.find((m) => m.userId === userId);
     if (!member || (member.role !== 'OWNER' && member.role !== 'EDITOR'))
       throw new ForbiddenException();
     await this.prisma.project.delete({ where: { id } });
+    // delete the sandbox containers for every session of this project
+    for (const session of project.sessions) {
+      void destroySandbox(session.id);
+    }
   }
 }

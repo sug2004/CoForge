@@ -10,7 +10,11 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
     const err = await res.json().catch(() => ({}));
     throw new Error(err.message ?? `${res.status}`);
   }
-  return res.json();
+  // 204 No Content (e.g. deletes) — nothing to parse
+  if (res.status === 204) return undefined as T;
+  const text = await res.text();
+  if (!text) return undefined as T;
+  return JSON.parse(text) as T;
 }
 
 export interface Participant { id: string; username: string; avatarUrl: string | null }

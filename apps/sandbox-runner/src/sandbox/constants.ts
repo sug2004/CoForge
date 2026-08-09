@@ -4,9 +4,9 @@ export const CONTAINER_MEMORY = 512 * 1024 * 1024; // 512mb
 export const CONTAINER_CPUS = 1;
 export const CONTAINER_PIDS_LIMIT = 128;
 export const WORKSPACE_DIR = '/workspace';
+export const SANDBOX_NETWORK_NAME = 'coforge-sandbox-net';
 
-export const DEFAULT_RUN_COMMAND_TIMEOUT_MS = 300_000; // 5 min (npm install etc.)
-export const DEFAULT_RUN_TESTS_TIMEOUT_MS = 120_000;
+export const SETUP_PACKAGES = 'git python3 make g++ curl ca-certificates';
 
 export const DEFAULT_MAX_CONTAINERS = 10;
 export const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
@@ -25,4 +25,10 @@ export const IGNORED_DIRS = new Set([
   '__pycache__',
 ]);
 
-export const MAX_FILE_BYTES = 1024 * 1024; // 1mb
+// Common dev-server ports published to random host ports at container
+// creation. Docker Desktop hosts cannot reach bridge-network container IPs,
+// so published ports are the only way the browser can reach a sandboxed
+// dev server. Add a port here (and restart sandbox-runner) to support it.
+export const PREVIEW_PORTS = [
+  3000, 3001, 5173, 8080, 8000, 5000, 4000, 4173, 9000, 8008,
+];

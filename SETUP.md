@@ -154,9 +154,10 @@ Verify: open `http://localhost:3000` in a browser.
 2. Type in one tab → changes appear in the other
 
 ### Test the sandbox
-1. In the editor's **Terminal** panel at the bottom, type a command (e.g. `echo hello`)
-2. Press Enter or click **Run**
-3. Output streams live to all connected clients
+1. In the editor's **Terminal** panel at the bottom, click into the terminal and type a command (e.g. `echo hello`)
+2. Press Enter — this is a real PTY shell, so `cd`, `export`, Ctrl+C, and long-running processes like `npm run dev` all work
+3. Output (colors, spinners, progress bars) streams live to all connected clients
+4. Files produced in the sandbox (lockfiles, build output) appear in the file tree automatically
 
 ---
 

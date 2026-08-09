@@ -1,6 +1,20 @@
 import { Injectable, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
+const RUNNER_URL =
+  process.env.SANDBOX_RUNNER_URL ?? 'http://localhost:3004';
+
+async function destroySandbox(sessionId: string) {
+  try {
+    await fetch(
+      `${RUNNER_URL}/sandbox/${encodeURIComponent(sessionId)}`,
+      { method: 'DELETE' },
+    );
+  } catch {
+    // best effort — runner may be down
+  }
+}
+
 @Injectable()
 export class WorkspacesService {
   constructor(private readonly prisma: PrismaService) {}
@@ -43,7 +57,16 @@ export class WorkspacesService {
 
   async delete(workspaceId: string, userId: string) {
     await this.assertOwner(workspaceId, userId);
+    // gather all session ids before the cascade delete so sandbox containers
+    // can be removed afterwards
+    const sessions = await this.prisma.session.findMany({
+      where: { project: { workspaceId } },
+      select: { id: true },
+    });
     await this.prisma.workspace.delete({ where: { id: workspaceId } });
+    for (const session of sessions) {
+      void destroySandbox(session.id);
+    }
   }
 
   private async assertOwner(workspaceId: string, userId: string) {

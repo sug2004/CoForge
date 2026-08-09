@@ -21,6 +21,20 @@ const IGNORED = new Set([
 const MAX_FILE_SIZE = 500 * 1024; // 500kb — skip binary/large files
 const MAX_FILES = 200;
 
+const RUNNER_URL =
+  process.env.SANDBOX_RUNNER_URL ?? 'http://localhost:3004';
+
+async function destroySandbox(sessionId: string) {
+  try {
+    await fetch(
+      `${RUNNER_URL}/sandbox/${encodeURIComponent(sessionId)}`,
+      { method: 'DELETE' },
+    );
+  } catch {
+    // best effort — runner may be down
+  }
+}
+
 @Injectable()
 export class SessionsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -107,6 +121,8 @@ export class SessionsService {
     );
     if (!isMember) throw new ForbiddenException();
     await this.prisma.session.delete({ where: { id: sessionId } });
+    // remove the sandbox container + workspace so nothing leaks
+    void destroySandbox(sessionId);
   }
 
   async cloneRepo(

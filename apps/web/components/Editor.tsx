@@ -54,9 +54,9 @@ function langFromPath(filePath: string): string {
   return EXT_LANG[ext] ?? 'plaintext';
 }
 
-function bindYTextToMonaco(yText: Y.Text, ydoc: Y.Doc, editor: MonacoEditorType.IStandaloneCodeEditor): () => void {
+function bindYTextToMonaco(yText: Y.Text, ydoc: Y.Doc, editor: MonacoEditorType.IStandaloneCodeEditor): (() => void) | null {
   const model = editor.getModel();
-  if (!model) return () => {};
+  if (!model) return null;
   let ignoreModelChange = false;
 
   model.setValue(yText.toString());
@@ -91,7 +91,17 @@ function bindYTextToMonaco(yText: Y.Text, ydoc: Y.Doc, editor: MonacoEditorType.
   });
 
   yText.observe(yObserver);
-  return () => { yText.unobserve(yObserver); modelListener.dispose(); };
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    try {
+      yText.unobserve(yObserver);
+    } catch {
+      // already removed
+    }
+    modelListener.dispose();
+  };
 }
 
 function Avatar({ name, color, avatarUrl, size = 7 }: {
@@ -277,9 +287,23 @@ function FileTree({ paths, active, currentDir, onSelect, onSelectFolder, onNewFi
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width, flexShrink: 0, background: T.surface, borderRight: `1px solid ${T.border}`, position: 'relative' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', borderBottom: `1px solid ${T.border}` }}>
         <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 700, color: T.accent, fontFamily: 'JetBrains Mono, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Explorer{currentDir ? ` / ${currentDir}` : ''}</span>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button onClick={onNewFolder} title="New folder" style={{ color: T.accent, background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: '0 2px' }}>📁+</button>
-          <button onClick={onNewFile} title="New file" style={{ color: T.accent, background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: '0 2px' }}>+</button>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button
+            onClick={onNewFolder}
+            title="New folder in current directory"
+            style={{ color: T.text2, background: T.card, border: `1px solid ${T.border}`, borderRadius: 6, cursor: 'pointer', fontSize: 11, lineHeight: 1, padding: '4px 8px', fontWeight: 600 }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = T.accent; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = T.text2; }}
+          >
+            + Folder
+          </button>
+          <button
+            onClick={onNewFile}
+            title="New file in current directory"
+            style={{ color: T.accent, background: T.card, border: `1px solid ${T.border}`, borderRadius: 6, cursor: 'pointer', fontSize: 11, lineHeight: 1, padding: '4px 8px', fontWeight: 700 }}
+          >
+            + File
+          </button>
         </div>
       </div>
       <div style={{ overflowY: 'auto', flex: 1, paddingTop: 4, paddingBottom: 4 }}>
@@ -447,33 +471,55 @@ export default function Editor({ sessionId }: { sessionId: string }) {
   const monacoRef = useRef<typeof import('monaco-editor') | null>(null);
   const ydocRef = useRef<Y.Doc | null>(null);
   const textCleanupRef = useRef<(() => void) | null>(null);
+  const boundKeyRef = useRef<{ path: string; text: Y.Text } | null>(null);
 
   const switchToFile = useCallback((filePath: string) => {
     const ydoc = ydocRef.current;
     const editor = editorRef.current;
     const monaco = monacoRef.current;
     if (!ydoc || !editor || !monaco) return;
+    const disposed = (editor as { isDisposed?: () => boolean }).isDisposed?.() ?? false;
+    if (disposed) return;
 
     const filesMap = ydoc.getMap<Y.Text>('files');
-    if (!filesMap.has(filePath)) ydoc.transact(() => filesMap.set(filePath, new Y.Text()));
+    let text = filesMap.get(filePath);
+    if (!text) {
+      ydoc.transact(() => filesMap.set(filePath, new Y.Text()));
+      text = filesMap.get(filePath)!;
+    }
 
     const lang = langFromPath(filePath);
     const uri = monaco.Uri.parse(`file:///${filePath}`);
     let model = monaco.editor.getModel(uri);
-    if (!model) model = monaco.editor.createModel('', lang, uri);
-    else monaco.editor.setModelLanguage(model, lang);
+    if (!model || ((model as { isDisposed?: () => boolean }).isDisposed?.() ?? false)) {
+      model = monaco.editor.createModel('', lang, uri);
+    } else {
+      monaco.editor.setModelLanguage(model, lang);
+    }
 
     try { editor.setModel(model); } catch { /* Monaco Canceled — benign */ }
     setActiveFile(filePath);
     setLanguage(lang);
 
+    // already bound to this exact file and Y.Text instance — nothing to do
+    const bound = boundKeyRef.current;
+    if (bound && bound.path === filePath && bound.text === text) return;
+
+    const cleanup = bindYTextToMonaco(text, ydoc, editor);
+    if (!cleanup) return;
     textCleanupRef.current?.();
-    textCleanupRef.current = bindYTextToMonaco(filesMap.get(filePath)!, ydoc, editor);
+    textCleanupRef.current = cleanup;
+    boundKeyRef.current = { path: filePath, text };
   }, []);
 
   function handleEditorMount(editor: MonacoEditorType.IStandaloneCodeEditor, monaco: typeof import('monaco-editor')) {
     editorRef.current = editor;
     monacoRef.current = monaco;
+
+    // a fresh editor instance means any previous binding belongs to a dead editor
+    textCleanupRef.current?.();
+    textCleanupRef.current = null;
+    boundKeyRef.current = null;
 
     const m = monaco as any;
     const compilerOptions = {
@@ -488,6 +534,60 @@ export default function Editor({ sessionId }: { sessionId: string }) {
     m.languages.typescript.javascriptDefaults.setCompilerOptions(compilerOptions);
     m.languages.typescript.typescriptDefaults.setEagerModelSync(true);
     m.languages.typescript.javascriptDefaults.setEagerModelSync(true);
+
+    // The sandbox's node_modules isn't available to Monaco's TS worker, so
+    // react / react/jsx-runtime can't be resolved for .tsx/.jsx files. Provide
+    // an ambient shim so JSX compiles (error 2875) without real type info.
+    const jsxShim = [
+      `declare module 'react' {`,
+      `  export const useState: any;`,
+      `  export const useEffect: any;`,
+      `  export const useRef: any;`,
+      `  export const useCallback: any;`,
+      `  export const useMemo: any;`,
+      `  export const useContext: any;`,
+      `  export const useReducer: any;`,
+      `  export const useLayoutEffect: any;`,
+      `  export const useId: any;`,
+      `  export const createContext: any;`,
+      `  export const createElement: any;`,
+      `  export const Fragment: any;`,
+      `  export const StrictMode: any;`,
+      `  export const memo: any;`,
+      `  export const forwardRef: any;`,
+      `  export const Children: any;`,
+      `  export const cloneElement: any;`,
+      `  export const isValidElement: any;`,
+      `  export default any;`,
+      `  export namespace JSX {`,
+      `    interface Element {}`,
+      `    interface IntrinsicElements { [elem: string]: any; }`,
+      `    interface ElementChildrenAttribute { children: {}; }`,
+      `  }`,
+      `}`,
+      `declare module 'react/jsx-runtime' {`,
+      `  export const Fragment: any;`,
+      `  export const jsx: any;`,
+      `  export const jsxs: any;`,
+      `}`,
+      `declare module 'react/jsx-dev-runtime' {`,
+      `  export const Fragment: any;`,
+      `  export const jsxDEV: any;`,
+      `}`,
+      `declare namespace JSX {`,
+      `  interface Element {}`,
+      `  interface IntrinsicElements { [elem: string]: any; }`,
+      `  interface ElementChildrenAttribute { children: {}; }`,
+      `}`,
+    ].join('\n');
+    m.languages.typescript.typescriptDefaults.addExtraLib(
+      jsxShim,
+      'file:///types/react-jsx-runtime.d.ts',
+    );
+    m.languages.typescript.javascriptDefaults.addExtraLib(
+      jsxShim,
+      'file:///types/react-jsx-runtime.d.ts',
+    );
 
     const { ydoc, provider, awareness } = createYSession(sessionId);
     ydocRef.current = ydoc;

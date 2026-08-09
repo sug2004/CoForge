@@ -1,21 +1,22 @@
 import {
-  BadRequestException,
-  ConflictException,
   Controller,
   Get,
   Param,
   Post,
+  Put,
+  Delete,
   Body,
-  Res,
+  HttpCode,
 } from '@nestjs/common';
-import { Response } from 'express';
 import { SandboxService } from './sandbox.service';
-import { writeNdjson } from './ndjson';
 
-export interface ExecBody {
-  command?: string;
+export interface FilesBody {
   files?: Record<string, string>;
-  timeoutMs?: number;
+  deleted?: string[];
+}
+
+export interface PreviewBody {
+  port?: number;
 }
 
 @Controller('sandbox')
@@ -33,40 +34,43 @@ export class SandboxController {
     return { files };
   }
 
-  @Post(':sessionId/exec')
-  async exec(
+  @Put(':sessionId/files')
+  async writeFiles(
     @Param('sessionId') sessionId: string,
-    @Body() body: ExecBody,
-    @Res() res: Response,
+    @Body() body: FilesBody,
   ) {
-    res.setHeader('Content-Type', 'application/x-ndjson');
-    try {
-      await this.sandbox.exec(
-        sessionId,
-        body.command,
-        body.files,
-        body.timeoutMs,
-        res,
-      );
-    } catch (e) {
-      const isConflict = e instanceof ConflictException;
-      const isBadRequest = e instanceof BadRequestException;
-      const statusCode = (e as { statusCode?: number })?.statusCode;
-      const status = isConflict
-        ? 409
-        : isBadRequest
-          ? 400
-          : statusCode && statusCode >= 400 && statusCode < 600
-            ? statusCode
-            : 500;
-      const message = e instanceof Error ? e.message : 'Internal error';
+    await this.sandbox.writeFiles(sessionId, {
+      files: body.files ?? {},
+      deleted: body.deleted ?? [],
+    });
+    return { ok: true };
+  }
 
-      if (!res.headersSent) {
-        res.status(status).json({ error: message });
-      } else {
-        writeNdjson(res, { stream: 'error', message });
-        res.end();
-      }
-    }
+  @Get(':sessionId/preview')
+  async listPreviews(@Param('sessionId') sessionId: string) {
+    const ports = await this.sandbox.listPublishedPorts(sessionId);
+    return { ports };
+  }
+
+  @Post(':sessionId/preview')
+  async openPreview(
+    @Param('sessionId') sessionId: string,
+    @Body() body: PreviewBody,
+  ) {
+    const port = Math.max(1, Math.min(65535, body?.port ?? 3000));
+    const { hostPort } = await this.sandbox.openPreview(sessionId, port);
+    return { url: `http://localhost:${hostPort}`, hostPort };
+  }
+
+  @Delete(':sessionId')
+  @HttpCode(204)
+  async destroy(@Param('sessionId') sessionId: string) {
+    await this.sandbox.destroyContainer(sessionId);
+  }
+
+  @Delete(':sessionId/preview')
+  async closePreview(@Param('sessionId') sessionId: string) {
+    this.sandbox.closePreview(sessionId);
+    return { ok: true };
   }
 }
