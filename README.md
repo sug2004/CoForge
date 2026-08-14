@@ -4,6 +4,8 @@ Real-time collaborative code editor with an AI agent that works alongside human 
 
 Multiple developers edit code together live in a shared Yjs document. The agent joins each session as a participant: it plans changes, explores the code with terminal + file tools, stages edits, runs the test suite, and proposes changes for human review — or auto-applies low-risk ones.
 
+![CoForge demo UI](docs/image.png)
+
 ---
 
 ## Key features
