@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import MonacoEditor from '@monaco-editor/react';
 import { createYSession } from '@/lib/ydoc';
 import { api } from '@/lib/api';
 import SandboxPanel from '@/components/SandboxPanel';
+import { AgentPanel } from '@/components/agent/AgentPanel';
 import type { editor as MonacoEditorType } from 'monaco-editor';
 import * as Y from 'yjs';
 
@@ -52,6 +53,101 @@ type DbParticipant = { user: { id: string; username: string; avatarUrl: string |
 function langFromPath(filePath: string): string {
   const ext = filePath.split('.').pop() ?? '';
   return EXT_LANG[ext] ?? 'plaintext';
+}
+
+// Quick-open file picker (Ctrl+E / search button). Fuzzy-ish substring match
+// against full path and basename; Enter or click opens, Esc closes.
+function QuickOpen({ open, paths, onOpenFile, onClose }: {
+  open: boolean;
+  paths: string[];
+  onOpenFile: (p: string) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [index, setIndex] = useState(0);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const files = useMemo(() => paths.filter((p) => !p.endsWith('/')).sort(), [paths]);
+
+  const results = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return files;
+    const scored = files
+      .map((p) => {
+        const lower = p.toLowerCase();
+        const base = (p.split('/').pop() ?? '').toLowerCase();
+        const score = lower === q ? 0
+          : lower.startsWith(q) ? 1
+          : base.startsWith(q) ? 2
+          : lower.includes(q) ? 3
+          : base.includes(q) ? 4
+          : -1;
+        return { p, score };
+      })
+      .filter((x) => x.score >= 0)
+      .sort((a, b) => a.score - b.score || a.p.localeCompare(b.p));
+    return scored.map((x) => x.p);
+  }, [query, files]);
+
+  useEffect(() => {
+    if (open) {
+      setQuery('');
+      setIndex(0);
+      setTimeout(() => inputRef.current?.focus(), 0);
+    }
+  }, [open]);
+  useEffect(() => { setIndex(0); }, [query]);
+  useEffect(() => { setIndex((i) => Math.min(i, Math.max(0, results.length - 1))); }, [results]);
+
+  if (!open) return null;
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape') { e.preventDefault(); onClose(); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setIndex((i) => Math.min(results.length - 1, i + 1)); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); setIndex((i) => Math.max(0, i - 1)); return; }
+    if (e.key === 'Enter') { e.preventDefault(); const p = results[index]; if (p) onOpenFile(p); }
+  };
+
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.45)', display: 'flex', justifyContent: 'center', alignItems: 'flex-start', paddingTop: '12vh' }}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{ width: 560, maxWidth: '90vw', background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, boxShadow: '0 12px 40px rgba(0,0,0,0.6)', overflow: 'hidden' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderBottom: `1px solid ${T.border}` }}>
+          <span style={{ color: T.text3, fontSize: 14 }}>⌕</span>
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Search files… (Ctrl+E)"
+            style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: T.text1, fontSize: 14, fontFamily: 'JetBrains Mono, Fira Code, monospace' }}
+          />
+          <span style={{ color: T.text3, fontSize: 10, border: `1px solid ${T.border}`, borderRadius: 4, padding: '2px 5px', fontFamily: 'JetBrains Mono, monospace' }}>Esc</span>
+        </div>
+        <div style={{ maxHeight: 320, overflowY: 'auto', padding: '4px 0' }}>
+          {results.length === 0 ? (
+            <div style={{ padding: '16px 12px', color: T.text3, fontSize: 12 }}>No files match.</div>
+          ) : results.map((p, i) => (
+            <div
+              key={p}
+              onMouseDown={() => onOpenFile(p)}
+              onMouseEnter={() => setIndex(i)}
+              style={{
+                padding: '6px 12px', cursor: 'pointer', fontSize: 13,
+                fontFamily: 'JetBrains Mono, Fira Code, monospace',
+                color: i === index ? T.text1 : T.text2,
+                background: i === index ? T.hover : 'transparent',
+              }}
+            >
+              {p}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function bindYTextToMonaco(yText: Y.Text, ydoc: Y.Doc, editor: MonacoEditorType.IStandaloneCodeEditor): (() => void) | null {
@@ -443,11 +539,14 @@ export default function Editor({ sessionId }: { sessionId: string }) {
   const [files, setFiles] = useState<string[]>([]);
   const [currentDir, setCurrentDir] = useState('');
   const [activeFile, setActiveFile] = useState<string>('');
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [showExplorer, setShowExplorer] = useState(true);
   const [language, setLanguage] = useState('plaintext');
   const [cloning, setCloning] = useState(false);
   const [peers, setPeers] = useState<Peer[]>([]);
   const [dbParticipants, setDbParticipants] = useState<DbParticipant[]>([]);
   const [allOnlineNames, setAllOnlineNames] = useState<Set<string>>(new Set());
+  const [userId, setUserId] = useState<string>('');
   const awarenessRef = useRef<any>(null);
   const pendingParticipantsRef = useRef<DbParticipant[]>([]);
   const allOnlineNamesRef = useRef<Set<string>>(new Set());
@@ -461,6 +560,7 @@ export default function Editor({ sessionId }: { sessionId: string }) {
         awarenessRef.current?.setLocalStateField('participants', participants);
       })
       .catch(() => {});
+    api.auth.me().then(me => setUserId(me.id)).catch(() => {});
     // reset peers on session change so stale awareness from previous session is cleared
     setPeers([]);
     setAllOnlineNames(new Set());
@@ -786,6 +886,25 @@ export default function Editor({ sessionId }: { sessionId: string }) {
     return () => { textCleanupRef.current?.(); };
   }, []);
 
+  // Ctrl+E (or Cmd+E on macOS) toggles the quick-open file picker; Ctrl+B
+  // toggles the explorer sidebar. Capture phase + stopPropagation so both win
+  // over Monaco's keybindings.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'e') {
+        e.preventDefault();
+        e.stopPropagation();
+        setQuickOpen((v) => !v);
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        e.stopPropagation();
+        setShowExplorer((v) => !v);
+      }
+    }
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, []);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: T.bg }}>
       <Navbar
@@ -798,35 +917,92 @@ export default function Editor({ sessionId }: { sessionId: string }) {
         allOnlineNames={allOnlineNames}
       />
       <div className="flex flex-1 overflow-hidden">
-        <FileTree
-          paths={files}
-          active={activeFile}
-          currentDir={currentDir}
-          onSelect={switchToFile}
-          onSelectFolder={setCurrentDir}
-          onNewFile={handleNewFile}
-          onNewFolder={handleNewFolder}
-          onRename={handleRename}
-          onDelete={handleDelete}
-        />
-        <MonacoEditor
-          height="100%"
-          language={language}
-          theme="vs-dark"
-          onMount={handleEditorMount}
-          options={{
-            fontSize: 14,
-            fontFamily: 'JetBrains Mono, Fira Code, monospace',
-            fontLigatures: true,
-            minimap: { enabled: false },
-            lineNumbersMinChars: 3,
-            scrollBeyondLastLine: false,
-            renderLineHighlight: 'line',
-            cursorBlinking: 'smooth',
-            cursorStyle: 'block',
-          }}
-          keepCurrentModel
-        />
+        {showExplorer && (
+          <FileTree
+            paths={files}
+            active={activeFile}
+            currentDir={currentDir}
+            onSelect={switchToFile}
+            onSelectFolder={setCurrentDir}
+            onNewFile={handleNewFile}
+            onNewFolder={handleNewFolder}
+            onRename={handleRename}
+            onDelete={handleDelete}
+          />
+        )}
+        <div style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column' }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '4px 12px',
+              fontSize: 12,
+              background: T.surface,
+              borderBottom: `1px solid ${T.border}`,
+            }}
+          >
+            <span
+              style={{
+                flex: 1,
+                fontFamily: 'JetBrains Mono, Fira Code, monospace',
+                color: T.text2,
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+              title={activeFile || 'no file selected'}
+            >
+              {activeFile ? activeFile : '— no file selected —'}
+            </span>
+            <button
+              onClick={() => setShowExplorer((v) => !v)}
+              title={showExplorer ? 'Hide explorer (Ctrl+B)' : 'Show explorer (Ctrl+B)'}
+              style={{ color: showExplorer ? T.accent : T.text2, background: T.card, border: `1px solid ${T.border}`, borderRadius: 6, cursor: 'pointer', fontSize: 11, lineHeight: 1, padding: '4px 8px', fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = T.accent; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = showExplorer ? T.accent : T.text2; }}
+            >
+              Explorer
+            </button>
+            <button
+              onClick={() => setQuickOpen(true)}
+              title="Search files (Ctrl+E)"
+              style={{ color: T.text2, background: T.card, border: `1px solid ${T.border}`, borderRadius: 6, cursor: 'pointer', fontSize: 11, lineHeight: 1, padding: '4px 8px', fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = T.accent; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = T.text2; }}
+            >
+              ⌕ Search
+            </button>
+          </div>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <MonacoEditor
+              width="100%"
+              height="100%"
+              language={language}
+              theme="vs-dark"
+              onMount={handleEditorMount}
+              options={{
+                fontSize: 14,
+                fontFamily: 'JetBrains Mono, Fira Code, monospace',
+                fontLigatures: true,
+                minimap: { enabled: false },
+                lineNumbersMinChars: 3,
+                scrollBeyondLastLine: false,
+                renderLineHighlight: 'line',
+                cursorBlinking: 'smooth',
+                cursorStyle: 'block',
+              }}
+              keepCurrentModel
+            />
+          </div>
+          <QuickOpen
+            open={quickOpen}
+            paths={files}
+            onOpenFile={(p) => { switchToFile(p); setQuickOpen(false); }}
+            onClose={() => setQuickOpen(false)}
+          />
+        </div>
+        {userId && <AgentPanel sessionId={sessionId} userId={userId} editorRef={editorRef} ydocRef={ydocRef} />}
       </div>
       <SandboxPanel sessionId={sessionId} />
     </div>

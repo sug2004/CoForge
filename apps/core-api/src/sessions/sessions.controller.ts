@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Delete,
+  Body,
   Param,
   Query,
   Req,
@@ -46,5 +47,14 @@ export class SessionsController {
   @Get('sessions/:id/events')
   findEvents(@Param('id') id: string, @Query('since') since?: string) {
     return this.sessions.findEvents(id, since);
+  }
+
+  @Post('sessions/:id/events')
+  createEvent(
+    @Param('id') id: string,
+    @Req() req,
+    @Body() body: { type: string; payload: any },
+  ) {
+    return this.sessions.createEvent(id, req.user.id, body.type, body.payload ?? {});
   }
 }

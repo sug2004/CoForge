@@ -109,6 +109,29 @@ export class SessionsService {
     });
   }
 
+  // Append to the shared audit/activity feed. actorId is the requesting user —
+  // agent-authored actions are logged under the user whose thread produced them.
+  async createEvent(
+    sessionId: string,
+    userId: string,
+    type: string,
+    payload: any,
+  ) {
+    const session = await this.prisma.session.findUniqueOrThrow({
+      where: { id: sessionId },
+      include: {
+        project: { include: { workspace: { include: { members: true } } } },
+      },
+    });
+    const isMember = session.project.workspace.members.some(
+      (m) => m.userId === userId,
+    );
+    if (!isMember) throw new ForbiddenException();
+    return this.prisma.sessionEvent.create({
+      data: { sessionId, actorId: userId, type, payload },
+    });
+  }
+
   async delete(sessionId: string, userId: string) {
     const session = await this.prisma.session.findUniqueOrThrow({
       where: { id: sessionId },

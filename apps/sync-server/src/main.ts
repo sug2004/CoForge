@@ -1,6 +1,8 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { resolve } from 'node:path';
 import * as http from 'http';
+import { Server as SocketIOServer } from 'socket.io';
 import WebSocket, { WebSocketServer } from 'ws';
 import * as Y from 'yjs';
 import * as syncProtocol from 'y-protocols/sync';
@@ -96,14 +98,57 @@ function handleConnection(ws: WebSocket, roomName: string) {
   });
 }
 
+// Load the repo-root .env so a manual `npm run start:dev` uses the same
+// JWT_SECRET as core-api (tokens are signed by core-api and verified here).
+// dev.ps1 already injects JWT_SECRET into the process env, which wins.
+if (!process.env.JWT_SECRET) {
+  try {
+    process.loadEnvFile(resolve(__dirname, '../../../.env'));
+  } catch {
+    // No root .env (e.g. CI) — fall back to the hardcoded dev secret.
+  }
+}
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const httpServer = http.createServer(
     app.getHttpAdapter().getInstance() as http.RequestListener,
   );
-  const wss = new WebSocketServer({ server: httpServer });
+
+  // Initialize Socket.io for agent events. The engine.io path stays at the
+  // default '/socket.io'; clients join the '/agent' *namespace* (the gateway
+  // listens on `server.of('/agent')`). The raw-ws Yjs relay and the sandbox
+  // shell relay both live on the same http server but use their own paths.
+  const io = new SocketIOServer(httpServer, {
+    cors: {
+      origin: process.env.FRONTEND_URL ?? 'http://localhost:3000',
+    },
+  });
+
+  // Make io available globally for the gateway
+  (global as any).agentIo = io;
+
+  // Expose the room/doc registry so the Nest controllers (/sync/files,
+  // /sync/apply) can read + write the shared Y.Doc state that main.ts owns.
+  (global as any).coforgeRooms = {
+    getDoc: (sessionId: string) => getRoom(sessionId).doc,
+  };
 
   const sandboxRelay = new SandboxRelay((sessionId) => getRoom(sessionId).doc);
+
+  const wss = new WebSocketServer({ noServer: true });
+
+  // Route raw WebSocket upgrades manually so socket.io (path /socket.io) and
+  // the Yjs/sandbox relays (everything else) don't fight over the same socket.
+  // Without this, connecting to the /agent namespace crashes the process with
+  // "server.handleUpgrade() was called more than once with the same socket".
+  httpServer.on('upgrade', (req, socket, head) => {
+    const pathname = (req.url ?? '/').split('?')[0];
+    if (pathname.startsWith('/socket.io')) return; // engine.io handles these
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit('connection', ws, req);
+    });
+  });
 
   wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
     const pathname = (req.url ?? '/').split('?')[0];
@@ -118,8 +163,9 @@ async function bootstrap() {
   });
 
   await app.init();
-  httpServer.listen(3001, () => {
-    console.log('sync-server running on ws://localhost:3001');
+  const port = parseInt(process.env.PORT ?? '3001', 10);
+  httpServer.listen(port, () => {
+    console.log(`sync-server running on ws://localhost:${port}`);
   });
 }
 void bootstrap();

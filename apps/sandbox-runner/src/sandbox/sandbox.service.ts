@@ -3,6 +3,7 @@ import {
   OnModuleInit,
   OnModuleDestroy,
   BadRequestException,
+  ConflictException,
   Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -11,7 +12,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import * as net from 'net';
-import { Duplex } from 'stream';
+import { Duplex, PassThrough } from 'stream';
 import {
   CONTAINER_IMAGE,
   CONTAINER_NAME_PREFIX,
@@ -39,6 +40,18 @@ export interface ShellSession {
   workspaceDir: string;
 }
 
+export interface ExecRunResult {
+  exitCode: number | null;
+  timeout: boolean;
+}
+
+export interface ExecRun {
+  stdout: PassThrough;
+  stderr: PassThrough;
+  status: PassThrough;
+  done: Promise<ExecRunResult>;
+}
+
 interface SandboxEntry {
   container: Docker.Container;
   containerId: string;
@@ -46,6 +59,7 @@ interface SandboxEntry {
   createdAt: number;
   lastUsedAt: number;
   provisioned: boolean;
+  provisioning: Promise<void> | null;
   shell: ShellSession | null;
 }
 
@@ -67,6 +81,19 @@ sock.on('error', () => process.exit(1));
 process.stdin.on('error', () => process.exit(1));
 `;
 
+// Resolve a tool-provided working directory to an absolute in-container path,
+// rejecting anything that escapes the workspace mount.
+function resolveWorkDir(cwd?: string): string {
+  if (!cwd || cwd === WORKSPACE_DIR || cwd === '.') return WORKSPACE_DIR;
+  const resolved = cwd.startsWith(WORKSPACE_DIR)
+    ? cwd
+    : path.posix.resolve(WORKSPACE_DIR, cwd);
+  if (resolved === WORKSPACE_DIR || resolved.startsWith(`${WORKSPACE_DIR}/`)) {
+    return resolved;
+  }
+  throw new BadRequestException(`Invalid cwd: ${cwd}`);
+}
+
 @Injectable()
 export class SandboxService implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger(SandboxService.name);
@@ -74,6 +101,10 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
   private readonly entries = new Map<string, SandboxEntry>();
   private readonly pendingCreates = new Map<string, Promise<SandboxEntry>>();
   private readonly previewBridges = new Map<string, PreviewBridge>();
+  private readonly busyExecs = new Map<
+    string,
+    { exec: Docker.Exec; stream: Duplex; container: Docker.Container }
+  >();
   private readonly maxContainers: number;
   private readonly idleTimeoutMs: number;
   private readonly workspaceRoot: string;
@@ -195,6 +226,164 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
   async writeFiles(sessionId: string, diff: FileDiff) {
     const entry = await this.ensureContainer(sessionId);
     await this.applyFileDiff(entry, diff);
+  }
+
+  // One-shot exec (agent validation / tool calls). Runs `sh -c command` in the
+  // session container and demuxes stdout/stderr into two PassThrough streams.
+  // Enforces a hard timeout and a one-in-flight guard per session key.
+  async runCommand(
+    sessionId: string,
+    command: string,
+    timeoutMs = 30_000,
+    cwd?: string,
+  ): Promise<ExecRun> {
+    if (this.busyExecs.has(sessionId)) {
+      throw new ConflictException('a command is already running for this sandbox');
+    }
+    const entry = await this.ensureContainer(sessionId);
+    entry.lastUsedAt = Date.now();
+
+    // Status channel: the controller relays these frames to the caller so the
+    // client sees progress instead of a silent request while the container is
+    // provisioning (image pull + apt-get can take a minute or two on first use).
+    const status = new PassThrough();
+    if (!entry.provisioned) {
+      status.write('provisioning sandbox tools…\n');
+    }
+    await this.provision(entry);
+    status.end();
+
+    const exec = await entry.container.exec({
+      Cmd: ['sh', '-c', command],
+      AttachStdout: true,
+      AttachStderr: true,
+      Tty: false,
+      User: 'node',
+      WorkingDir: resolveWorkDir(cwd),
+    });
+    const stream = await exec.start({ hijack: true, stdin: false });
+
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    try {
+      const modem = (entry.container as unknown as { modem?: { demuxStream: (s: any, o: any, e: any) => void } }).modem;
+      modem?.demuxStream(stream, stdout, stderr);
+    } catch {
+      // fall back to raw stdout if demux is unavailable
+      stream.on('data', (c: Buffer) => stdout.write(c));
+    }
+
+    const result: ExecRunResult = { exitCode: null, timeout: false };
+    let settled = false;
+    let timer: NodeJS.Timeout | null = null;
+
+    const finish = async (timedOut: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      try {
+        const info = await exec.inspect();
+        result.exitCode = info.ExitCode ?? null;
+      } catch {
+        result.exitCode = null;
+      }
+      result.timeout = timedOut;
+      // Force-close the hijack stream so `done` resolves (and the controller
+      // sends the exit frame) even if Docker never signals the socket close —
+      // otherwise the caller's fetch aborts with a confusing "timed out".
+      try {
+        stream.destroy();
+      } catch {
+        // already closed
+      }
+      stdout.end();
+      stderr.end();
+    };
+
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        void (async () => {
+          // Only report a timeout if the process is genuinely still running.
+          // An exec that already exited must report its real exit code instead
+          // of a misleading "timed out".
+          try {
+            const info = await exec.inspect();
+            if (info.Running) {
+              result.timeout = true;
+              if (info.Pid) {
+                await this.killExecProcess(entry.container, info.Pid).catch(() => {});
+              }
+            } else {
+              result.exitCode = info.ExitCode ?? null;
+            }
+          } catch {
+            result.timeout = true;
+          }
+          void finish(result.timeout);
+        })();
+      }, timeoutMs);
+    }
+
+    const clearBusy = () => {
+      if (this.busyExecs.get(sessionId)?.stream === stream) {
+        this.busyExecs.delete(sessionId);
+      }
+    };
+    stream.on('end', clearBusy);
+    stream.on('close', clearBusy);
+    stream.on('error', clearBusy);
+    this.busyExecs.set(sessionId, { exec, stream, container: entry.container });
+
+    const done = new Promise<ExecRunResult>((resolve) => {
+      const onEnd = () => void finish(result.timeout);
+      stream.on('end', onEnd);
+      stream.on('close', onEnd);
+      stream.on('error', onEnd);
+    });
+
+    return { stdout, stderr, status, done };
+  }
+
+  // Kill the currently running exec for a session. The agent-service aborts its
+  // streaming request when the user cancels a run; without this the container
+  // process would keep running (and the busy slot stay locked) until its own
+  // timeout. Best effort.
+  async abortExec(sessionId: string): Promise<void> {
+    const entry = this.busyExecs.get(sessionId);
+    if (!entry) return;
+    try {
+      const info = await entry.exec.inspect();
+      if (info.Pid) await this.killExecProcess(entry.container, info.Pid);
+    } catch {
+      // process may already be gone; stream close clears the busy slot
+    }
+  }
+
+  // dockerode's Exec has no kill() — kill the exec'd process tree via a nested
+  // one-shot exec. Best effort; used only on timeout.
+  private async killExecProcess(container: Docker.Container, pid: number) {
+    try {
+      const killer = await container.exec({
+        Cmd: [
+          'sh',
+          '-c',
+          `PGID=$(ps -o pgid= -p ${pid} 2>/dev/null | tr -d ' '); ` +
+            `if [ -n "$PGID" ] && [ "$PGID" != "1" ]; then kill -9 -- -$PGID 2>/dev/null; fi; ` +
+            `kill -9 ${pid} 2>/dev/null; pkill -9 -P ${pid} 2>/dev/null; true`,
+        ],
+        AttachStdout: true,
+        AttachStderr: true,
+        Tty: false,
+      });
+      const stream = await killer.start({ hijack: true, stdin: false });
+      stream.resume();
+      stream.on('error', () => {});
+    } catch {
+      // best effort
+    }
   }
 
   // ── preview (published container port → host port) ────────────────────────
@@ -440,13 +629,32 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
       createdAt: Date.now(),
       lastUsedAt: Date.now(),
       provisioned: false,
+      provisioning: null,
       shell: null,
     };
     this.entries.set(sessionId, entry);
     return entry;
   }
 
-  private async provision(entry: SandboxEntry) {
+  // Keeps a session's container alive and provisions it (apt install) without
+  // blocking on a command. The agent-service calls this during planning and
+  // periodically while the agent runs, so the idle reaper / capacity eviction
+  // can't destroy the container mid-run and the first exec doesn't stall on
+  // package installation. Idempotent — provisioning is deduped via `provisioning`.
+  async touch(sessionId: string): Promise<void> {
+    const entry = await this.ensureContainer(sessionId);
+    entry.lastUsedAt = Date.now();
+    await this.provision(entry);
+  }
+
+  private provision(entry: SandboxEntry): Promise<void> {
+    if (entry.provisioned) return Promise.resolve();
+    if (entry.provisioning) return entry.provisioning;
+    entry.provisioning = this.doProvision(entry);
+    return entry.provisioning;
+  }
+
+  private async doProvision(entry: SandboxEntry) {
     const cmd = `apt-get update -qq && apt-get install -y -qq --no-install-recommends ${SETUP_PACKAGES} && rm -rf /var/lib/apt/lists/*`;
     try {
       const exec = await entry.container.exec({
@@ -479,6 +687,8 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
       }
     } catch (e) {
       this.log.warn(`provision error: ${(e as Error)?.message}`);
+    } finally {
+      entry.provisioning = null;
     }
   }
 
@@ -541,8 +751,7 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
     return files;
   }
 
-  private sanitizeRelPath(relPath: string): string {
-    const normalized = path.normalize(relPath).replace(/\\/g, '/');
+  private sanitizeRelPath(relPath: string): string {    const normalized = path.normalize(relPath).replace(/\\/g, '/');
     if (
       normalized.startsWith('../') ||
       normalized === '..' ||
@@ -553,8 +762,7 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
     return normalized;
   }
 
-  private async sweep() {
-    const now = Date.now();
+  private async sweep() {    const now = Date.now();
 
     const idle: string[] = [];
     for (const [id, entry] of this.entries) {
