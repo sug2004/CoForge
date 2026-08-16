@@ -1,9 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import MonacoEditor from '@monaco-editor/react';
 import { createYSession } from '@/lib/ydoc';
 import { api } from '@/lib/api';
+import SandboxPanel from '@/components/SandboxPanel';
+import { AgentPanel } from '@/components/agent/AgentPanel';
 import type { editor as MonacoEditorType } from 'monaco-editor';
 import * as Y from 'yjs';
 
@@ -53,9 +55,104 @@ function langFromPath(filePath: string): string {
   return EXT_LANG[ext] ?? 'plaintext';
 }
 
-function bindYTextToMonaco(yText: Y.Text, ydoc: Y.Doc, editor: MonacoEditorType.IStandaloneCodeEditor): () => void {
+// Quick-open file picker (Ctrl+E / search button). Fuzzy-ish substring match
+// against full path and basename; Enter or click opens, Esc closes.
+function QuickOpen({ open, paths, onOpenFile, onClose }: {
+  open: boolean;
+  paths: string[];
+  onOpenFile: (p: string) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [index, setIndex] = useState(0);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const files = useMemo(() => paths.filter((p) => !p.endsWith('/')).sort(), [paths]);
+
+  const results = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return files;
+    const scored = files
+      .map((p) => {
+        const lower = p.toLowerCase();
+        const base = (p.split('/').pop() ?? '').toLowerCase();
+        const score = lower === q ? 0
+          : lower.startsWith(q) ? 1
+          : base.startsWith(q) ? 2
+          : lower.includes(q) ? 3
+          : base.includes(q) ? 4
+          : -1;
+        return { p, score };
+      })
+      .filter((x) => x.score >= 0)
+      .sort((a, b) => a.score - b.score || a.p.localeCompare(b.p));
+    return scored.map((x) => x.p);
+  }, [query, files]);
+
+  useEffect(() => {
+    if (open) {
+      setQuery('');
+      setIndex(0);
+      setTimeout(() => inputRef.current?.focus(), 0);
+    }
+  }, [open]);
+  useEffect(() => { setIndex(0); }, [query]);
+  useEffect(() => { setIndex((i) => Math.min(i, Math.max(0, results.length - 1))); }, [results]);
+
+  if (!open) return null;
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape') { e.preventDefault(); onClose(); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setIndex((i) => Math.min(results.length - 1, i + 1)); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); setIndex((i) => Math.max(0, i - 1)); return; }
+    if (e.key === 'Enter') { e.preventDefault(); const p = results[index]; if (p) onOpenFile(p); }
+  };
+
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.45)', display: 'flex', justifyContent: 'center', alignItems: 'flex-start', paddingTop: '12vh' }}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{ width: 560, maxWidth: '90vw', background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, boxShadow: '0 12px 40px rgba(0,0,0,0.6)', overflow: 'hidden' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderBottom: `1px solid ${T.border}` }}>
+          <span style={{ color: T.text3, fontSize: 14 }}>⌕</span>
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Search files… (Ctrl+E)"
+            style={{ flex: 1, background: 'transparent', border: 'none', outline: 'none', color: T.text1, fontSize: 14, fontFamily: 'JetBrains Mono, Fira Code, monospace' }}
+          />
+          <span style={{ color: T.text3, fontSize: 10, border: `1px solid ${T.border}`, borderRadius: 4, padding: '2px 5px', fontFamily: 'JetBrains Mono, monospace' }}>Esc</span>
+        </div>
+        <div style={{ maxHeight: 320, overflowY: 'auto', padding: '4px 0' }}>
+          {results.length === 0 ? (
+            <div style={{ padding: '16px 12px', color: T.text3, fontSize: 12 }}>No files match.</div>
+          ) : results.map((p, i) => (
+            <div
+              key={p}
+              onMouseDown={() => onOpenFile(p)}
+              onMouseEnter={() => setIndex(i)}
+              style={{
+                padding: '6px 12px', cursor: 'pointer', fontSize: 13,
+                fontFamily: 'JetBrains Mono, Fira Code, monospace',
+                color: i === index ? T.text1 : T.text2,
+                background: i === index ? T.hover : 'transparent',
+              }}
+            >
+              {p}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function bindYTextToMonaco(yText: Y.Text, ydoc: Y.Doc, editor: MonacoEditorType.IStandaloneCodeEditor): (() => void) | null {
   const model = editor.getModel();
-  if (!model) return () => {};
+  if (!model) return null;
   let ignoreModelChange = false;
 
   model.setValue(yText.toString());
@@ -90,7 +187,17 @@ function bindYTextToMonaco(yText: Y.Text, ydoc: Y.Doc, editor: MonacoEditorType.
   });
 
   yText.observe(yObserver);
-  return () => { yText.unobserve(yObserver); modelListener.dispose(); };
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    try {
+      yText.unobserve(yObserver);
+    } catch {
+      // already removed
+    }
+    modelListener.dispose();
+  };
 }
 
 function Avatar({ name, color, avatarUrl, size = 7 }: {
@@ -127,11 +234,15 @@ type TreeNode =
 function buildTree(paths: string[]): TreeNode[] {
   const root: TreeNode[] = [];
   for (const p of [...paths].sort()) {
-    const parts = p.split('/');
+    const isDir = p.endsWith('/');
+    const raw = isDir ? p.slice(0, -1) : p;
+    if (!raw) continue;
+    const parts = raw.split('/');
     let nodes = root;
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
-      if (i === parts.length - 1) {
+      const last = i === parts.length - 1;
+      if (last && !isDir) {
         nodes.push({ kind: 'file', path: p, name: part });
       } else {
         let dir = nodes.find(n => n.kind === 'dir' && n.name === part) as Extract<TreeNode, { kind: 'dir' }> | undefined;
@@ -143,9 +254,10 @@ function buildTree(paths: string[]): TreeNode[] {
   return root;
 }
 
-function TreeNodes({ nodes, active, onSelect, onRename, onDelete, depth }: {
-  nodes: TreeNode[]; active: string; onSelect: (p: string) => void;
-  onRename: (p: string) => void; onDelete: (p: string) => void; depth: number;
+function TreeNodes({ nodes, active, currentDir, onSelect, onSelectFolder, onRename, onDelete, depth, basePath }: {
+  nodes: TreeNode[]; active: string; currentDir: string;
+  onSelect: (p: string) => void; onSelectFolder: (p: string) => void;
+  onRename: (p: string) => void; onDelete: (p: string) => void; depth: number; basePath: string;
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [hovered, setHovered] = useState<string | null>(null);
@@ -200,18 +312,25 @@ function TreeNodes({ nodes, active, onSelect, onRename, onDelete, depth }: {
         ) : (
           <div key={node.name}>
             <button
-              onClick={() => setCollapsed(s => { const n = new Set(s); n.has(node.name) ? n.delete(node.name) : n.add(node.name); return n; })}
+              onClick={() => {
+                const dirPath = `${basePath}${node.name}/`;
+                setCollapsed(s => { const n = new Set(s); n.has(node.name) ? n.delete(node.name) : n.add(node.name); return n; });
+                onSelectFolder(dirPath);
+              }}
               style={{
                 display: 'flex', alignItems: 'center', gap: 4,
                 width: '100%', textAlign: 'left',
                 paddingLeft: 8 + indent, paddingRight: 8,
                 paddingTop: 3, paddingBottom: 3,
                 fontSize: 11, fontFamily: 'JetBrains Mono, monospace', fontWeight: 600,
-                color: T.accent, background: 'transparent', border: 'none', cursor: 'pointer',
+                color: T.accent,
+                background: currentDir === `${basePath}${node.name}/` ? T.hover : 'transparent',
+                border: 'none', cursor: 'pointer',
                 userSelect: 'none', letterSpacing: '0.03em',
+                borderLeft: currentDir === `${basePath}${node.name}/` ? `2px solid ${T.accent}` : '2px solid transparent',
               }}
               onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = T.hover; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
+              onMouseLeave={e => { if (currentDir !== `${basePath}${node.name}/`) (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
             >
               <span style={{ fontSize: 9, display: 'inline-block', width: 10, textAlign: 'center', flexShrink: 0 }}>
                 {collapsed.has(node.name) ? '▶' : '▼'}
@@ -220,7 +339,7 @@ function TreeNodes({ nodes, active, onSelect, onRename, onDelete, depth }: {
               <span style={{ letterSpacing: '0.02em' }}>{node.name}</span>
             </button>
             {!collapsed.has(node.name) && (
-              <TreeNodes nodes={node.children} active={active} onSelect={onSelect} onRename={onRename} onDelete={onDelete} depth={depth + 1} />
+              <TreeNodes nodes={node.children} active={active} currentDir={currentDir} onSelect={onSelect} onSelectFolder={onSelectFolder} onRename={onRename} onDelete={onDelete} depth={depth + 1} basePath={`${basePath}${node.name}/`} />
             )}
           </div>
         )
@@ -229,9 +348,11 @@ function TreeNodes({ nodes, active, onSelect, onRename, onDelete, depth }: {
   );
 }
 
-function FileTree({ paths, active, onSelect, onNewFile, onRename, onDelete }: {
-  paths: string[]; active: string; onSelect: (p: string) => void;
-  onNewFile: () => void; onRename: (p: string) => void; onDelete: (p: string) => void;
+function FileTree({ paths, active, currentDir, onSelect, onSelectFolder, onNewFile, onNewFolder, onRename, onDelete }: {
+  paths: string[]; active: string; currentDir: string;
+  onSelect: (p: string) => void; onSelectFolder: (p: string) => void;
+  onNewFile: () => void; onNewFolder: () => void;
+  onRename: (p: string) => void; onDelete: (p: string) => void;
 }) {
   const tree = buildTree(paths);
   const [width, setWidth] = useState(210);
@@ -261,11 +382,28 @@ function FileTree({ paths, active, onSelect, onNewFile, onRename, onDelete }: {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width, flexShrink: 0, background: T.surface, borderRight: `1px solid ${T.border}`, position: 'relative' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', borderBottom: `1px solid ${T.border}` }}>
-        <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 700, color: T.accent, fontFamily: 'JetBrains Mono, monospace' }}>Explorer</span>
-        <button onClick={onNewFile} title="New file" style={{ color: T.accent, background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: '0 2px' }}>+</button>
+        <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 700, color: T.accent, fontFamily: 'JetBrains Mono, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Explorer{currentDir ? ` / ${currentDir}` : ''}</span>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button
+            onClick={onNewFolder}
+            title="New folder in current directory"
+            style={{ color: T.text2, background: T.card, border: `1px solid ${T.border}`, borderRadius: 6, cursor: 'pointer', fontSize: 11, lineHeight: 1, padding: '4px 8px', fontWeight: 600 }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = T.accent; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = T.text2; }}
+          >
+            + Folder
+          </button>
+          <button
+            onClick={onNewFile}
+            title="New file in current directory"
+            style={{ color: T.accent, background: T.card, border: `1px solid ${T.border}`, borderRadius: 6, cursor: 'pointer', fontSize: 11, lineHeight: 1, padding: '4px 8px', fontWeight: 700 }}
+          >
+            + File
+          </button>
+        </div>
       </div>
       <div style={{ overflowY: 'auto', flex: 1, paddingTop: 4, paddingBottom: 4 }}>
-        <TreeNodes nodes={tree} active={active} onSelect={onSelect} onRename={onRename} onDelete={onDelete} depth={0} />
+        <TreeNodes nodes={tree} active={active} currentDir={currentDir} onSelect={onSelect} onSelectFolder={onSelectFolder} onRename={onRename} onDelete={onDelete} depth={0} basePath="" />
       </div>
       {/* drag handle */}
       <div
@@ -399,12 +537,17 @@ function dedupeParticipants(list: DbParticipant[]): DbParticipant[] {
 
 export default function Editor({ sessionId }: { sessionId: string }) {
   const [files, setFiles] = useState<string[]>([]);
+  const [currentDir, setCurrentDir] = useState('');
   const [activeFile, setActiveFile] = useState<string>('');
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [showExplorer, setShowExplorer] = useState(true);
+  const [termCollapsed, setTermCollapsed] = useState(false);
   const [language, setLanguage] = useState('plaintext');
   const [cloning, setCloning] = useState(false);
   const [peers, setPeers] = useState<Peer[]>([]);
   const [dbParticipants, setDbParticipants] = useState<DbParticipant[]>([]);
   const [allOnlineNames, setAllOnlineNames] = useState<Set<string>>(new Set());
+  const [userId, setUserId] = useState<string>('');
   const awarenessRef = useRef<any>(null);
   const pendingParticipantsRef = useRef<DbParticipant[]>([]);
   const allOnlineNamesRef = useRef<Set<string>>(new Set());
@@ -418,6 +561,7 @@ export default function Editor({ sessionId }: { sessionId: string }) {
         awarenessRef.current?.setLocalStateField('participants', participants);
       })
       .catch(() => {});
+    api.auth.me().then(me => setUserId(me.id)).catch(() => {});
     // reset peers on session change so stale awareness from previous session is cleared
     setPeers([]);
     setAllOnlineNames(new Set());
@@ -428,33 +572,55 @@ export default function Editor({ sessionId }: { sessionId: string }) {
   const monacoRef = useRef<typeof import('monaco-editor') | null>(null);
   const ydocRef = useRef<Y.Doc | null>(null);
   const textCleanupRef = useRef<(() => void) | null>(null);
+  const boundKeyRef = useRef<{ path: string; text: Y.Text } | null>(null);
 
   const switchToFile = useCallback((filePath: string) => {
     const ydoc = ydocRef.current;
     const editor = editorRef.current;
     const monaco = monacoRef.current;
     if (!ydoc || !editor || !monaco) return;
+    const disposed = (editor as { isDisposed?: () => boolean }).isDisposed?.() ?? false;
+    if (disposed) return;
 
     const filesMap = ydoc.getMap<Y.Text>('files');
-    if (!filesMap.has(filePath)) ydoc.transact(() => filesMap.set(filePath, new Y.Text()));
+    let text = filesMap.get(filePath);
+    if (!text) {
+      ydoc.transact(() => filesMap.set(filePath, new Y.Text()));
+      text = filesMap.get(filePath)!;
+    }
 
     const lang = langFromPath(filePath);
     const uri = monaco.Uri.parse(`file:///${filePath}`);
     let model = monaco.editor.getModel(uri);
-    if (!model) model = monaco.editor.createModel('', lang, uri);
-    else monaco.editor.setModelLanguage(model, lang);
+    if (!model || ((model as { isDisposed?: () => boolean }).isDisposed?.() ?? false)) {
+      model = monaco.editor.createModel('', lang, uri);
+    } else {
+      monaco.editor.setModelLanguage(model, lang);
+    }
 
     try { editor.setModel(model); } catch { /* Monaco Canceled — benign */ }
     setActiveFile(filePath);
     setLanguage(lang);
 
+    // already bound to this exact file and Y.Text instance — nothing to do
+    const bound = boundKeyRef.current;
+    if (bound && bound.path === filePath && bound.text === text) return;
+
+    const cleanup = bindYTextToMonaco(text, ydoc, editor);
+    if (!cleanup) return;
     textCleanupRef.current?.();
-    textCleanupRef.current = bindYTextToMonaco(filesMap.get(filePath)!, ydoc, editor);
+    textCleanupRef.current = cleanup;
+    boundKeyRef.current = { path: filePath, text };
   }, []);
 
   function handleEditorMount(editor: MonacoEditorType.IStandaloneCodeEditor, monaco: typeof import('monaco-editor')) {
     editorRef.current = editor;
     monacoRef.current = monaco;
+
+    // a fresh editor instance means any previous binding belongs to a dead editor
+    textCleanupRef.current?.();
+    textCleanupRef.current = null;
+    boundKeyRef.current = null;
 
     const m = monaco as any;
     const compilerOptions = {
@@ -469,6 +635,60 @@ export default function Editor({ sessionId }: { sessionId: string }) {
     m.languages.typescript.javascriptDefaults.setCompilerOptions(compilerOptions);
     m.languages.typescript.typescriptDefaults.setEagerModelSync(true);
     m.languages.typescript.javascriptDefaults.setEagerModelSync(true);
+
+    // The sandbox's node_modules isn't available to Monaco's TS worker, so
+    // react / react/jsx-runtime can't be resolved for .tsx/.jsx files. Provide
+    // an ambient shim so JSX compiles (error 2875) without real type info.
+    const jsxShim = [
+      `declare module 'react' {`,
+      `  export const useState: any;`,
+      `  export const useEffect: any;`,
+      `  export const useRef: any;`,
+      `  export const useCallback: any;`,
+      `  export const useMemo: any;`,
+      `  export const useContext: any;`,
+      `  export const useReducer: any;`,
+      `  export const useLayoutEffect: any;`,
+      `  export const useId: any;`,
+      `  export const createContext: any;`,
+      `  export const createElement: any;`,
+      `  export const Fragment: any;`,
+      `  export const StrictMode: any;`,
+      `  export const memo: any;`,
+      `  export const forwardRef: any;`,
+      `  export const Children: any;`,
+      `  export const cloneElement: any;`,
+      `  export const isValidElement: any;`,
+      `  export default any;`,
+      `  export namespace JSX {`,
+      `    interface Element {}`,
+      `    interface IntrinsicElements { [elem: string]: any; }`,
+      `    interface ElementChildrenAttribute { children: {}; }`,
+      `  }`,
+      `}`,
+      `declare module 'react/jsx-runtime' {`,
+      `  export const Fragment: any;`,
+      `  export const jsx: any;`,
+      `  export const jsxs: any;`,
+      `}`,
+      `declare module 'react/jsx-dev-runtime' {`,
+      `  export const Fragment: any;`,
+      `  export const jsxDEV: any;`,
+      `}`,
+      `declare namespace JSX {`,
+      `  interface Element {}`,
+      `  interface IntrinsicElements { [elem: string]: any; }`,
+      `  interface ElementChildrenAttribute { children: {}; }`,
+      `}`,
+    ].join('\n');
+    m.languages.typescript.typescriptDefaults.addExtraLib(
+      jsxShim,
+      'file:///types/react-jsx-runtime.d.ts',
+    );
+    m.languages.typescript.javascriptDefaults.addExtraLib(
+      jsxShim,
+      'file:///types/react-jsx-runtime.d.ts',
+    );
 
     const { ydoc, provider, awareness } = createYSession(sessionId);
     ydocRef.current = ydoc;
@@ -575,13 +795,29 @@ export default function Editor({ sessionId }: { sessionId: string }) {
   }, [ydocRef.current]);
 
   function handleNewFile() {
-    const name = prompt('File name (e.g. src/utils.ts)');
+    const name = prompt(`File name in ${currentDir || 'root'}`);
     if (!name?.trim()) return;
+    const clean = name.trim().replace(/^\/+|\/+$/g, '');
+    if (!clean) return;
     const ydoc = ydocRef.current;
     if (!ydoc) return;
+    const fullPath = currentDir ? `${currentDir}${clean}` : clean;
     const filesMap = ydoc.getMap<Y.Text>('files');
-    if (!filesMap.has(name)) ydoc.transact(() => filesMap.set(name, new Y.Text()));
-    switchToFile(name);
+    if (!filesMap.has(fullPath)) ydoc.transact(() => filesMap.set(fullPath, new Y.Text()));
+    switchToFile(fullPath);
+  }
+
+  function handleNewFolder() {
+    const name = prompt(`Folder name in ${currentDir || 'root'}`);
+    if (!name?.trim()) return;
+    const clean = name.trim().replace(/^\/+|\/+$/g, '');
+    if (!clean) return;
+    const ydoc = ydocRef.current;
+    if (!ydoc) return;
+    const folderPath = `${currentDir}${clean}/`;
+    const filesMap = ydoc.getMap<Y.Text>('files');
+    ydoc.transact(() => filesMap.set(folderPath, new Y.Text()));
+    setCurrentDir(folderPath);
   }
 
   function handleRename(oldPath: string) {
@@ -651,6 +887,29 @@ export default function Editor({ sessionId }: { sessionId: string }) {
     return () => { textCleanupRef.current?.(); };
   }, []);
 
+  // Ctrl+E (or Cmd+E on macOS) toggles the quick-open file picker; Ctrl+B
+  // toggles the explorer sidebar; Ctrl+J toggles the terminal. Capture phase +
+  // stopPropagation so all win over Monaco's keybindings.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'e') {
+        e.preventDefault();
+        e.stopPropagation();
+        setQuickOpen((v) => !v);
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        e.stopPropagation();
+        setShowExplorer((v) => !v);
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        e.stopPropagation();
+        setTermCollapsed((v) => !v);
+      }
+    }
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, []);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: T.bg }}>
       <Navbar
@@ -663,33 +922,94 @@ export default function Editor({ sessionId }: { sessionId: string }) {
         allOnlineNames={allOnlineNames}
       />
       <div className="flex flex-1 overflow-hidden">
-        <FileTree
-          paths={files}
-          active={activeFile}
-          onSelect={switchToFile}
-          onNewFile={handleNewFile}
-          onRename={handleRename}
-          onDelete={handleDelete}
-        />
-        <MonacoEditor
-          height="100%"
-          language={language}
-          theme="vs-dark"
-          onMount={handleEditorMount}
-          options={{
-            fontSize: 14,
-            fontFamily: 'JetBrains Mono, Fira Code, monospace',
-            fontLigatures: true,
-            minimap: { enabled: false },
-            lineNumbersMinChars: 3,
-            scrollBeyondLastLine: false,
-            renderLineHighlight: 'line',
-            cursorBlinking: 'smooth',
-            cursorStyle: 'block',
-          }}
-          keepCurrentModel
-        />
+        {showExplorer && (
+          <FileTree
+            paths={files}
+            active={activeFile}
+            currentDir={currentDir}
+            onSelect={switchToFile}
+            onSelectFolder={setCurrentDir}
+            onNewFile={handleNewFile}
+            onNewFolder={handleNewFolder}
+            onRename={handleRename}
+            onDelete={handleDelete}
+          />
+        )}
+        <div style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column' }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '4px 12px',
+              fontSize: 12,
+              background: T.surface,
+              borderBottom: `1px solid ${T.border}`,
+            }}
+          >
+            <span
+              style={{
+                flex: 1,
+                fontFamily: 'JetBrains Mono, Fira Code, monospace',
+                color: T.text2,
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+              title={activeFile || 'no file selected'}
+            >
+              {activeFile ? activeFile : '— no file selected —'}
+            </span>
+            <button
+              onClick={() => setShowExplorer((v) => !v)}
+              title={showExplorer ? 'Hide explorer (Ctrl+B)' : 'Show explorer (Ctrl+B)'}
+              style={{ color: showExplorer ? T.accent : T.text2, background: T.card, border: `1px solid ${T.border}`, borderRadius: 6, cursor: 'pointer', fontSize: 11, lineHeight: 1, padding: '4px 8px', fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = T.accent; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = showExplorer ? T.accent : T.text2; }}
+            >
+              Explorer
+            </button>
+            <button
+              onClick={() => setQuickOpen(true)}
+              title="Search files (Ctrl+E)"
+              style={{ color: T.text2, background: T.card, border: `1px solid ${T.border}`, borderRadius: 6, cursor: 'pointer', fontSize: 11, lineHeight: 1, padding: '4px 8px', fontWeight: 600, fontFamily: 'JetBrains Mono, monospace' }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = T.accent; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = T.text2; }}
+            >
+              ⌕ Search
+            </button>
+          </div>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <MonacoEditor
+              width="100%"
+              height="100%"
+              language={language}
+              theme="vs-dark"
+              onMount={handleEditorMount}
+              options={{
+                fontSize: 14,
+                fontFamily: 'JetBrains Mono, Fira Code, monospace',
+                fontLigatures: true,
+                minimap: { enabled: false },
+                lineNumbersMinChars: 3,
+                scrollBeyondLastLine: false,
+                renderLineHighlight: 'line',
+                cursorBlinking: 'smooth',
+                cursorStyle: 'block',
+              }}
+              keepCurrentModel
+            />
+          </div>
+          <QuickOpen
+            open={quickOpen}
+            paths={files}
+            onOpenFile={(p) => { switchToFile(p); setQuickOpen(false); }}
+            onClose={() => setQuickOpen(false)}
+          />
+        </div>
+        {userId && <AgentPanel sessionId={sessionId} userId={userId} editorRef={editorRef} ydocRef={ydocRef} />}
       </div>
+      <SandboxPanel sessionId={sessionId} collapsed={termCollapsed} onToggleCollapse={() => setTermCollapsed((v) => !v)} />
     </div>
   );
 }

@@ -1,4 +1,14 @@
-import { Controller, Get, Post, Delete, Body, Param, Req, UseGuards, HttpCode } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Delete,
+  Body,
+  Param,
+  Req,
+  UseGuards,
+  HttpCode,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt/jwt-auth.guard';
 import { WorkspacesService } from './workspaces.service';
 
@@ -24,12 +34,20 @@ export class WorkspacesController {
   }
 
   @Post(':id/members')
-  addMember(@Req() req, @Param('id') id: string, @Body() body: { userId: string; role: 'EDITOR' | 'VIEWER' }) {
+  addMember(
+    @Req() req,
+    @Param('id') id: string,
+    @Body() body: { userId: string; role: 'EDITOR' | 'VIEWER' },
+  ) {
     return this.workspaces.addMember(id, req.user.id, body.userId, body.role);
   }
 
   @Delete(':id/members/:userId')
-  removeMember(@Req() req, @Param('id') id: string, @Param('userId') userId: string) {
+  removeMember(
+    @Req() req,
+    @Param('id') id: string,
+    @Param('userId') userId: string,
+  ) {
     return this.workspaces.removeMember(id, req.user.id, userId);
   }
 }

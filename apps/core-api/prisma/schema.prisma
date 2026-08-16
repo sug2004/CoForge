@@ -24,11 +24,13 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  memberships     WorkspaceMember[]
-  ownedWorkspaces Workspace[]          @relation("WorkspaceOwner")
-  sessions        Session[]            @relation("SessionCreator")
-  participations  SessionParticipant[]
-  events          SessionEvent[]       @relation("EventActor")
+  memberships          WorkspaceMember[]
+  ownedWorkspaces      Workspace[]          @relation("WorkspaceOwner")
+  sessions             Session[]            @relation("SessionCreator")
+  participations       SessionParticipant[]
+  events               SessionEvent[]       @relation("EventActor")
+  agentThreads         AgentThread[]
+  userProjectPreferences UserProjectPreference[]
 }
 
 model Workspace {
@@ -74,7 +76,9 @@ model Project {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  sessions Session[]
+  sessions          Session[]
+  projectMemory     ProjectMemory?
+  userPreferences   UserProjectPreference[]
 }
 
 model Session {
@@ -89,9 +93,10 @@ model Session {
   startedAt DateTime  @default(now())
   endedAt   DateTime?
 
-  ydocState    Bytes?
-  events       SessionEvent[]
-  participants SessionParticipant[]
+  ydocState       Bytes?
+  events          SessionEvent[]
+  participants    SessionParticipant[]
+  agentThreads    AgentThread[]
 }
 
 model SessionParticipant {
@@ -119,4 +124,60 @@ model SessionEvent {
   payload Json
 
   createdAt DateTime @default(now())
+}
+
+model AgentThread {
+  id          String   @id @default(uuid())
+  sessionId   String
+  userId      String
+  title       String?
+  createdAt   DateTime @default(now())
+  archivedAt  DateTime?
+  session     Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages    AgentMessage[]
+  contextSnapshots ContextSnapshot[]
+  @@unique([sessionId, userId, id])
+  @@index([sessionId, userId])
+}
+
+model AgentMessage {
+  id          String   @id @default(uuid())
+  threadId    String
+  role        String   // "user" | "planner" | "coder" | "validator" | "applier" | "assistant" | "summary"
+  content     Json     // text, tool_use, tool_result, or diff payloads
+  createdAt   DateTime @default(now())
+  thread      AgentThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  @@index([threadId, createdAt])
+}
+
+model ContextSnapshot {
+  id          String   @id @default(uuid())
+  threadId    String
+  focusFileId String?
+  cursor      Json?    // {line, col}
+  selection   Json?    // {startLine, startCol, endLine, endCol}
+  openFileIds String[] // ordered tab list at time of the request
+  createdAt   DateTime @default(now())
+  thread      AgentThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  @@index([threadId])
+}
+
+model ProjectMemory {
+  id          String   @id @default(uuid())
+  projectId   String   @unique
+  summary     String   // living architecture/conventions doc, agent-maintained
+  updatedAt   DateTime @updatedAt
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+model UserProjectPreference {
+  id          String   @id @default(uuid())
+  projectId   String
+  userId      String
+  notes       String   // "prefers named exports", "uses NestJS DI conventions", etc.
+  updatedAt   DateTime @updatedAt
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([projectId, userId])
 }

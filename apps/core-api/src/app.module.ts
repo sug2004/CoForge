@@ -7,6 +7,8 @@ import { AuthModule } from './auth/auth.module';
 import { WorkspacesModule } from './workspaces/workspaces.module';
 import { ProjectsModule } from './projects/projects.module';
 import { SessionsModule } from './sessions/sessions.module';
+import { AgentThreadsModule } from './agent-threads/agent-threads.module';
+import { ProjectMemoryModule } from './project-memory/project-memory.module';
 
 @Module({
   imports: [
@@ -16,6 +18,8 @@ import { SessionsModule } from './sessions/sessions.module';
     WorkspacesModule,
     ProjectsModule,
     SessionsModule,
+    AgentThreadsModule,
+    ProjectMemoryModule,
   ],
   controllers: [AppController],
   providers: [AppService],

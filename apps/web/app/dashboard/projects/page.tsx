@@ -22,7 +22,7 @@ export default function ProjectsPage() {
     api.workspaces.list().then(wsList => {
       setWorkspaces(wsList);
       const all: ProjectWithWs[] = wsList.flatMap(ws =>
-        (ws.projects ?? []).map((p) => ({ ...p, wsName: ws.name, wsId: ws.id }))
+        (ws.projects ?? []).map((p) => ({ ...p, wsName: ws.name, wsId: ws.id, workspaceId: ws.id, defaultBranch: 'main' }))
       );
       setProjects(all);
     }).catch(() => router.push('/login'));

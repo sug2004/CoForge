@@ -1,245 +1,208 @@
 # CoForge
 
-Real-time collaborative code editor with an MCP-connected AI agent as a session participant.
-Multiple developers edit code together live — the AI agent joins the session, runs commands, searches the codebase, explains code, and proposes edits.
+Real-time collaborative code editor with an AI agent that works alongside human developers — reading, editing, testing, and debugging the shared codebase like a teammate.
+
+Multiple developers edit code together live in a shared Yjs document. The agent joins each session as a participant: it plans changes, explores the code with terminal + file tools, stages edits, runs the test suite, and proposes changes for human review — or auto-applies low-risk ones.
+
+![CoForge demo UI](docs/image.png)
+
+---
+
+## Key features
+
+- **Live collaborative editing** — Monaco + Yjs CRDT over WebSocket; every keystroke converges across all connected tabs.
+- **AI agent as a session participant** — ask it to implement, explain, fix, or debug code in plain language.
+- **Planner → Coder → Tester pipeline** — the agent plans in small testable steps, implements each one, and validates against the project's real test/build command.
+- **Terminal + file tool-calling (Claude-Code-style)** — the agent reads files, greps, lists directories, and runs arbitrary shell commands in a private per-thread sandbox to debug and iterate.
+- **Sandboxed execution** — every agent run and human terminal lives in an ephemeral Docker container (`node:20-slim`) with memory/CPU/pid limits and idle eviction.
+- **Human review of edits** — file changes are proposed as diffs and applied to the shared document only on accept (or auto-applied when low-risk).
+- **Project memory & preferences** — the agent carries architecture notes and per-user preferences across sessions, updated after each applied change.
+- **Multi-thread agent conversations** — separate chat threads per task, each with its own sandbox and message history.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              BROWSER CLIENTS                                │
-│                                                                             │
-│   ┌──────────────────────┐          ┌──────────────────────┐               │
-│   │      Tab / User 1    │          │      Tab / User 2    │               │
-│   │                      │          │                      │               │
-│   │  ┌────────────────┐  │          │  ┌────────────────┐  │               │
-│   │  │  Monaco Editor │  │          │  │  Monaco Editor │  │               │
-│   │  │  + Yjs Y.Doc   │  │          │  │  + Yjs Y.Doc   │  │               │
-│   │  │  + y-websocket │  │          │  │  + y-websocket │  │               │
-│   │  └───────┬────────┘  │          │  └───────┬────────┘  │               │
-│   └──────────┼───────────┘          └──────────┼───────────┘               │
-│              │  raw WebSocket                   │  raw WebSocket            │
-└──────────────┼──────────────────────────────────┼───────────────────────────┘
-               │                                  │
-               ▼                                  ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           sync-server  :3001                                │
-│                         NestJS + ws.Server                                  │
-│                                                                             │
-│   ┌─────────────────────────────────────────────────────────────────────┐  │
-│   │  Room Manager                                                       │  │
-│   │  Map<sessionId, { Y.Doc, Awareness, Set<WebSocket> }>               │  │
-│   │                                                                     │  │
-│   │  Sync Protocol (y-protocols)                                        │  │
-│   │  • step1 / step2 handshake on connect                               │  │
-│   │  • update broadcast to all conns in room                            │  │
-│   │  • awareness relay                                                  │  │
-│   └─────────────────────────────────────────────────────────────────────┘  │
-│                    │                        │                               │
-│              JWT verify               Socket.io (M4+)                      │
-└────────────────────┼────────────────────────┼───────────────────────────────┘
-                     │                        │
-          ┌──────────┘                        └──────────────┐
-          ▼                                                  ▼
-┌──────────────────────────┐              ┌──────────────────────────────────┐
-│    core-api  :3002       │              │      agent-service  :3003        │
-│    NestJS + Prisma       │              │      MCP Server                  │
-│                          │              │                                  │
-│  • GitHub OAuth          │              │  ┌────────────────────────────┐  │
-│  • JWT issue/verify      │              │  │  Anthropic API             │  │
-│  • Workspace CRUD        │◄────────────►│  │  Tool-calling loop (≤8)    │  │
-│  • Project CRUD          │  REST calls  │  │                            │  │
-│  • Session CRUD          │              │  │  Tools:                    │  │
-│  • SessionEvent log      │              │  │  • run_command             │  │
-│  • Git ops               │              │  │  • run_tests               │  │
-│    (diff/commit/PR)      │              │  │  • search_codebase         │  │
-│                          │              │  │  • git_diff                │  │
-│  ┌────────────────────┐  │              │  │  • explain_code            │  │
-│  │  PostgreSQL         │  │              │  └──────────────┬─────────────┘  │
-│  │  (Prisma ORM)       │  │              └─────────────────┼────────────────┘
-│  └────────────────────┘  │                                │
-│                          │                                │ exec requests
-│  ┌────────────────────┐  │              ┌─────────────────▼────────────────┐
-│  │  Redis             │  │              │    sandbox-runner  :3004         │
-│  │  • BullMQ jobs     │  │              │    Docker orchestration          │
-│  │  • Socket.io adapt │  │              │                                  │
-│  └────────────────────┘  │              │  • 1 container per session       │
-│                          │              │  • --memory=512m --cpus=1        │
-│  ┌────────────────────┐  │              │  • --network=none                │
-│  │  Qdrant / pgvector │  │              │  • 30s / 120s timeouts           │
-│  │  (Phase 3 RAG)     │  │              │  • streams stdout/stderr         │
-│  └────────────────────┘  │              └──────────────────────────────────┘
-└──────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                         BROWSER  (:3000)                            │
+│   Monaco + Yjs  ·  file explorer  ·  terminal  ·  agent chat panel  │
+└────────┬──────────────────────────┬────────────────────────┬────────┘
+         │  Yjs (y-websocket)       │  Socket.io             │  REST + SSE
+         ▼                          ▼                        ▼
+┌─────────────────┐   ┌───────────────────────┐   ┌────────────────────────┐
+│  sync-server    │   │  sync-server          │   │  agent-service  :3005   │
+│  :3001          │   │  /agent namespace     │   │  planner → coder →      │
+│  Yjs CRDT room  │◄──►│  agent:phase_started  │   │  tester → applier       │
+│  per session    │   │  agent:tool_started   │◄──►│  (LlmClient: NVIDIA NIM │
+│  sandbox shell  │   │  agent:tool_result    │   │   Anthropic)            │
+│  WS :3001       │   │  agent:message        │   └───────────┬────────────┘
+└────────┬────────┘   │  agent:edit_proposed  │               │ tools / exec
+         │            └───────────┬───────────┘               ▼
+         │                        │              ┌──────────────────────────┐
+         │    REST                │ REST         │  sandbox-runner  :3004   │
+         ▼                        ▼              │  Docker (dockerode)       │
+┌─────────────────┐   ┌───────────────────┐     │  · per-thread agent       │
+│  core-api :3002  │◄──►│  agent-service    │     │    container             │
+│  GitHub OAuth    │   │  sync/apply       │     │  · per-session human      │
+│  JWT auth        │   │  sync/files       │     │    terminal container     │
+│  workspaces      │   └───────────────────┘     │  · file push + exec       │
+│  projects        │                              │  · preview ports          │
+│  sessions        │                              └──────────────────────────┘
+│  agent threads   │
+│  project memory  │
+│  PostgreSQL      │
+│  (Prisma + pg)   │
+└─────────────────┘
 ```
+
+### Service map
+
+| Service | Port | Role |
+|---|---|---|
+| `web` | 3000 | Next.js UI — Monaco editor, terminal, agent chat panel |
+| `sync-server` | 3001 | Yjs CRDT relay, `/agent` Socket.io namespace, sandbox shell WS |
+| `core-api` | 3002 | GitHub OAuth, JWT, workspaces, projects, sessions, agent threads, memory |
+| `sandbox-runner` | 3004 | Docker orchestration — ephemeral containers, file push, exec streaming |
+| `agent-service` | 3005 | The agent — planning, tool-calling coder loop, testing, applying |
+
+### The agent pipeline (`apps/agent-service/src/agent/pipeline`)
+
+```
+User prompt
+  → ContextService   loads project memory, preferences, conversation, files
+  → Planner          emits a JSON plan (steps, risk, clarification) — JSON is
+                     repaired/strict-retried when the model mangles it
+  → Coder            agentic tool loop per step (max 25 tool iterations):
+                        read_file / list_files / grep / run_terminal /
+                        write_file / delete_file
+  → Validator (tester) runs the project's test/build command in the sandbox;
+                     failure output is fed back to the coder (up to 3 retries)
+  → Applier          proposes diffs; human accepts/rejects in the UI, or
+                     low-risk edits auto-apply (AGENT_AUTO_APPLY=true)
+  → project memory   updated (best-effort) after applied edits
+```
+
+Progress streams live to the chat panel as `agent:phase_started`, `agent:tool_started`,
+`agent:tool_result`, `agent:plan`, and `agent:message` events.
 
 ---
 
-## System Flow — Key Scenarios
-
-### 1. User edits code (real-time sync)
-```
-User keystroke
-  → Monaco onDidChangeContent
-  → Y.Text.insert / delete (via ydoc.transact)
-  → y-websocket encodes CRDT update
-  → WebSocket → sync-server
-  → sync-server applies to server Y.Doc
-  → sync-server broadcasts to all other conns in room
-  → Other tabs receive update → Yjs merges → Monaco applyEdits
-```
-
-### 2. GitHub OAuth + session start
-```
-Browser → GET /auth/github  (core-api)
-  → GitHub OAuth authorize URL
-  → GitHub callback → core-api exchanges code
-  → core-api upserts User, issues JWT
-  → Browser stores JWT
-  → POST /projects/:id/sessions  (core-api)
-  → core-api creates Session row, returns join token
-  → Browser connects to sync-server WebSocket with JWT
-  → sync-server verifies JWT + WorkspaceMember role
-  → Room created, editor loads
-```
-
-### 3. Agent invocation
-```
-User types @agent <prompt>
-  → Browser emits agent:invoke { sessionId, prompt }  (Socket.io)
-  → sync-server → POST /invoke  (agent-service)
-  → agent-service calls Anthropic API with tool definitions
-  → Anthropic returns tool_use block
-  → agent-service emits agent:tool_started → sync-server → all clients
-  → agent-service executes tool:
-      run_command / run_tests  → sandbox-runner POST /sandbox/:id/exec
-      search_codebase          → Qdrant vector query
-      git_diff                 → core-api GET /projects/:id/git/diff
-      explain_code             → reads Y.Text from ydoc snapshot
-  → agent-service emits agent:tool_result → sync-server → all clients
-  → tool_result sent back to Anthropic (multi-turn loop, max 8 iterations)
-  → Final text → agent:message → all clients
-  → If edit proposed → agent:edit_proposed → accept/reject UI
-  → On accept → Y.Text transaction with origin { actor: 'agent', toolCallId }
-  → All events persisted as SessionEvent rows
-```
-
-### 4. Sandbox execution
-```
-agent-service POST /sandbox/:sessionId/exec { command }
-  → sandbox-runner checks if container exists for session
-  → if not: docker run node:20-slim --memory=512m --cpus=1 --network=none
-  → serialize Y.Doc files map → write to /workspace bind mount
-  → exec command in container
-  → stream { stream: stdout|stderr, chunk } back to agent-service
-  → agent-service relays via sync-server → sandbox:output → all clients
-  → on exit → sandbox:exit { exitCode }
-  → container reused for session lifetime, destroyed on idle (15min)
-```
-
----
-
-## Monorepo Structure
+## Monorepo structure
 
 ```
 CoForge/
   apps/
-    web/              Next.js 16 — Monaco editor, Yjs client, presence UI, agent panel
-    sync-server/      NestJS — Yjs CRDT relay, Socket.io for agent/presence events
-    core-api/         NestJS + Prisma — auth, workspaces, projects, sessions, git
-    agent-service/    MCP server — Anthropic tool-calling loop, tool implementations
-    sandbox-runner/   Docker orchestration — ephemeral containers per session
-  packages/
-    shared-types/     Zod schemas + TypeScript types shared across apps
-    ui/               Shared React components
-  docs/
-    milestone-1-plan.md
+    web/               Next.js 16 + React 19 — Monaco editor, Yjs client, terminal, agent panel
+    sync-server/       NestJS — Yjs CRDT relay, Socket.io agent events, sandbox shell gateway
+    core-api/          NestJS + Prisma — GitHub OAuth, JWT, workspaces, projects, sessions,
+                       agent threads, project memory/preferences
+    agent-service/     NestJS — planner / coder / tester / applier pipeline, LLM client,
+                       sandbox tool execution
+    sandbox-runner/    NestJS + dockerode — ephemeral Docker containers, file sync, exec streaming
 ```
 
 ---
 
-## Tech Stack
+## Tech stack
 
 | Layer | Technology |
 |---|---|
-| Frontend | Next.js 16, React 19, Monaco Editor, Tailwind CSS |
-| Real-time sync | Yjs (CRDT), y-websocket, y-protocols |
-| Backend framework | NestJS |
-| Database | PostgreSQL via Prisma ORM |
-| Cache / Queue | Redis — BullMQ jobs + Socket.io multi-instance adapter |
-| Vector store | Qdrant or pgvector (Phase 3) |
-| AI | Anthropic Claude via MCP tool-calling |
-| Containers | Docker (sandbox-runner) |
-| Monorepo | pnpm workspaces |
+| Frontend | Next.js 16, React 19, Monaco Editor, xterm.js, Tailwind CSS |
+| Real-time sync | Yjs (CRDT), y-websocket, Socket.io |
+| Backend | NestJS (all services) |
+| Database | PostgreSQL via Prisma (with `@prisma/adapter-pg`) |
+| Sandboxing | Docker via dockerode (`node:20-slim`, memory/cpu/pid limits) |
+| AI providers | GLM-5.2 Free API on NVIDIA NIM (OpenAI-compatible) |
 | Language | TypeScript throughout |
 
 ---
 
-## Milestones
-
-| # | Milestone | Status |
-|---|---|---|
-| 1 | Sync spike — Monaco + Yjs, two tabs converge | ✅ Complete |
-| 2 | Auth + workspaces — GitHub OAuth, JWT, CRUD | 🔲 Next |
-| 3 | Sandbox + first tool — `run_command` end-to-end | 🔲 |
-| 4 | Agent invocation loop — full tool-calling round-trip | 🔲 |
-| 5 | Git integration — diff, commit, PR | 🔲 |
-| 6 | RAG — `search_codebase`, BullMQ indexing | 🔲 |
-| 7 | Agent-authored edits — accept/reject UI | 🔲 |
-| 8 | Session replay — scrub through event log | 🔲 |
-
----
-
-## Getting Started (Milestone 1)
+## Getting started
 
 ### Prerequisites
+
 - Node.js 20+
-- pnpm 9+
+- pnpm (v11+) and npm
+- Docker (PostgreSQL + Redis-free; sandbox containers)
 
-### Run sync-server
+### Run the stack (services in separate terminals)
+
+Start each service in its own terminal:
+
+1. **Infra** — `docker compose up -d postgres` and wait for PostgreSQL.
+2. **Database** — `pnpm migrate:deploy` in core-api.
+3. **Services** — run each app in its own terminal (see below).
+4. Open **http://localhost:3000**.
+
+### Run services individually
+
 ```bash
-cd apps/sync-server
-pnpm install
-pnpm start:dev
-# ws://localhost:3001
+cd apps/core-api       && pnpm install && pnpm start:dev    # :3002
+cd apps/sync-server    && pnpm install && pnpm start:dev    # :3001
+cd apps/sandbox-runner && pnpm install && pnpm start:dev    # :3004
+cd apps/agent-service  && pnpm install && pnpm start:dev    # :3005
+cd apps/web            && pnpm install && pnpm dev          # :3000
 ```
 
-### Run web
-```bash
-cd apps/web
-pnpm install
-pnpm dev
-# http://localhost:3000
-```
+> sync-server reads `JWT_SECRET` from the process environment; set it to the same
+> value as `apps/core-api/.env`.
 
-Open `http://localhost:3000/session/demo` in two browser tabs.
-Type in one — changes appear in the other in real-time.
+### Model provider for the agent
+
+The agent reads `apps/agent-service/.env` (gitignored). It uses a single provider —
+**GLM-5.2 Free API on NVIDIA NIM** (OpenAI-compatible):
+
+- `NVIDIA_API_KEY` (free key from https://build.nvidia.com)
+- `NVIDIA_BASE_URL` default `https://integrate.api.nvidia.com/v1`
+- `NVIDIA_MODEL` default `z-ai/glm-5.2` (used for all phases; override per phase
+  with `NVIDIA_PLANNER_MODEL` / `NVIDIA_CODER_MODEL` / `NVIDIA_MEMORY_MODEL` /
+  `NVIDIA_CHAT_MODEL`, or the generic `PLANNER_MODEL` / `CODER_MODEL` /
+  `MEMORY_MODEL` / `CHAT_MODEL`).
+
+Transient 429/5xx/timeouts are retried with backoff; a hard auth failure
+(401/403) with a client-supplied override key falls back to the server key.
 
 ---
 
-## Environment Variables
+## Environment variables
 
 ```bash
-# core-api (Milestone 2+)
+# core-api  (apps/core-api/.env)
 DATABASE_URL=
 GITHUB_CLIENT_ID=
 GITHUB_CLIENT_SECRET=
-JWT_SECRET=
-REDIS_URL=
+JWT_SECRET=                       # keep in sync with sync-server process env
 
-# agent-service (Milestone 4+)
-ANTHROPIC_API_KEY=
-QDRANT_URL=
-SANDBOX_RUNNER_URL=
+# agent-service  (apps/agent-service/.env)
+NVIDIA_API_KEY=                       # from https://build.nvidia.com
+NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
+NVIDIA_MODEL=z-ai/glm-5.2
+# optional per-phase: NVIDIA_PLANNER_MODEL / NVIDIA_CODER_MODEL / NVIDIA_MEMORY_MODEL / NVIDIA_CHAT_MODEL
+CORE_API_URL=http://localhost:3002
+SYNC_SERVER_URL=http://localhost:3001
+SANDBOX_RUNNER_URL=http://localhost:3004
+AGENT_AUTO_APPLY=true             # auto-apply low-risk edits without review
 
-# sandbox-runner (Milestone 3+)
-DOCKER_HOST=
-MAX_CONTAINERS=
-CONTAINER_IDLE_TIMEOUT_MS=
-
-# sync-server (Milestone 2+)
-CORE_API_URL=
-AGENT_SERVICE_URL=
-JWT_SECRET=
+# sandbox-runner
+DOCKER_HOST=                      # default: Docker Desktop named pipe on Windows
+MAX_CONTAINERS=10
+CONTAINER_IDLE_TIMEOUT_MS=900000  # idle containers evicted after 15 min
+SANDBOX_CONTAINER_MEMORY_MB=2048  # per-container RAM (default 2048)
+SANDBOX_CONTAINER_CPUS=2          # per-container CPUs (default 2)
+SANDBOX_WORKSPACE_ROOT=
 ```
+
+---
+
+## Current status
+
+Working end-to-end:
+
+- Live Yjs collaborative editing across tabs.
+- GitHub OAuth + JWT session auth; workspaces, projects, sessions.
+- Human terminal (xterm.js) backed by a per-session sandbox container.
+- Agent chat threads with message history and per-thread sandboxes.
+- Planner → coder → tester → applier pipeline with terminal + file tool calling.
+- Project memory and user preferences fed into every agent invocation.
+- Agent-proposed edits streamed as diffs with accept/reject (or auto-apply for low-risk).

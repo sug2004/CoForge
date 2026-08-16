@@ -1,13 +1,39 @@
-import { Injectable, ForbiddenException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  ForbiddenException,
+  BadRequestException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import simpleGit from 'simple-git';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 
-const IGNORED = new Set(['.git', 'node_modules', '.next', 'dist', 'build', '__pycache__', '.DS_Store']);
+const IGNORED = new Set([
+  '.git',
+  'node_modules',
+  '.next',
+  'dist',
+  'build',
+  '__pycache__',
+  '.DS_Store',
+]);
 const MAX_FILE_SIZE = 500 * 1024; // 500kb — skip binary/large files
 const MAX_FILES = 200;
+
+const RUNNER_URL =
+  process.env.SANDBOX_RUNNER_URL ?? 'http://localhost:3004';
+
+async function destroySandbox(sessionId: string) {
+  try {
+    await fetch(
+      `${RUNNER_URL}/sandbox/${encodeURIComponent(sessionId)}`,
+      { method: 'DELETE' },
+    );
+  } catch {
+    // best effort — runner may be down
+  }
+}
 
 @Injectable()
 export class SessionsService {
@@ -18,9 +44,11 @@ export class SessionsService {
       where: { id: projectId },
       include: { workspace: { include: { members: true } } },
     });
-    const isMember = project.workspace.members.some(m => m.userId === userId);
+    const isMember = project.workspace.members.some((m) => m.userId === userId);
     if (!isMember) throw new ForbiddenException();
-    return this.prisma.session.create({ data: { projectId, createdBy: userId } });
+    return this.prisma.session.create({
+      data: { projectId, createdBy: userId },
+    });
   }
 
   async findOne(id: string) {
@@ -30,7 +58,9 @@ export class SessionsService {
         project: true,
         creator: { select: { id: true, username: true, avatarUrl: true } },
         participants: {
-          include: { user: { select: { id: true, username: true, avatarUrl: true } } },
+          include: {
+            user: { select: { id: true, username: true, avatarUrl: true } },
+          },
           orderBy: { joinedAt: 'asc' },
         },
       },
@@ -40,11 +70,15 @@ export class SessionsService {
   async join(sessionId: string, userId: string) {
     const session = await this.prisma.session.findUniqueOrThrow({
       where: { id: sessionId },
-      include: { project: { include: { workspace: { include: { members: true } } } } },
+      include: {
+        project: { include: { workspace: { include: { members: true } } } },
+      },
     });
 
     const workspaceId = session.project.workspaceId;
-    const isMember = session.project.workspace.members.some(m => m.userId === userId);
+    const isMember = session.project.workspace.members.some(
+      (m) => m.userId === userId,
+    );
 
     // auto-add to workspace as EDITOR if not already a member (invite link flow)
     if (!isMember) {
@@ -54,11 +88,13 @@ export class SessionsService {
     }
 
     // upsert session participant — no-op if already exists
-    await this.prisma.sessionParticipant.upsert({
-      where: { sessionId_userId: { sessionId, userId } },
-      create: { sessionId, userId },
-      update: {},
-    });
+    try {
+      await this.prisma.sessionParticipant.create({
+        data: { sessionId, userId },
+      });
+    } catch (e: any) {
+      if (e?.code !== 'P2002') throw e;
+    }
 
     return this.findOne(sessionId);
   }
@@ -73,23 +109,59 @@ export class SessionsService {
     });
   }
 
+  // Append to the shared audit/activity feed. actorId is the requesting user —
+  // agent-authored actions are logged under the user whose thread produced them.
+  async createEvent(
+    sessionId: string,
+    userId: string,
+    type: string,
+    payload: any,
+  ) {
+    const session = await this.prisma.session.findUniqueOrThrow({
+      where: { id: sessionId },
+      include: {
+        project: { include: { workspace: { include: { members: true } } } },
+      },
+    });
+    const isMember = session.project.workspace.members.some(
+      (m) => m.userId === userId,
+    );
+    if (!isMember) throw new ForbiddenException();
+    return this.prisma.sessionEvent.create({
+      data: { sessionId, actorId: userId, type, payload },
+    });
+  }
+
   async delete(sessionId: string, userId: string) {
     const session = await this.prisma.session.findUniqueOrThrow({
       where: { id: sessionId },
-      include: { project: { include: { workspace: { include: { members: true } } } } },
+      include: {
+        project: { include: { workspace: { include: { members: true } } } },
+      },
     });
-    const isMember = session.project.workspace.members.some(m => m.userId === userId);
+    const isMember = session.project.workspace.members.some(
+      (m) => m.userId === userId,
+    );
     if (!isMember) throw new ForbiddenException();
     await this.prisma.session.delete({ where: { id: sessionId } });
+    // remove the sandbox container + workspace so nothing leaks
+    void destroySandbox(sessionId);
   }
 
-  async cloneRepo(sessionId: string, userId: string): Promise<{ files: Record<string, string> }> {
+  async cloneRepo(
+    sessionId: string,
+    userId: string,
+  ): Promise<{ files: Record<string, string> }> {
     const session = await this.prisma.session.findUniqueOrThrow({
       where: { id: sessionId },
-      include: { project: { include: { workspace: { include: { members: true } } } } },
+      include: {
+        project: { include: { workspace: { include: { members: true } } } },
+      },
     });
 
-    const isMember = session.project.workspace.members.some(m => m.userId === userId);
+    const isMember = session.project.workspace.members.some(
+      (m) => m.userId === userId,
+    );
     if (!isMember) throw new ForbiddenException();
 
     const repoUrl = session.project.repoUrl;
@@ -98,8 +170,11 @@ export class SessionsService {
     const cloneDir = path.join(os.tmpdir(), `coforge-${sessionId}`);
 
     // reuse existing clone if present
-    try { await fs.access(cloneDir); }
-    catch { await simpleGit().clone(repoUrl, cloneDir, ['--depth', '1']); }
+    try {
+      await fs.access(cloneDir);
+    } catch {
+      await simpleGit().clone(repoUrl, cloneDir, ['--depth', '1']);
+    }
 
     const files = await this.readDir(cloneDir, cloneDir, 0);
     return { files };

@@ -10,7 +10,11 @@ async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> 
     const err = await res.json().catch(() => ({}));
     throw new Error(err.message ?? `${res.status}`);
   }
-  return res.json();
+  // 204 No Content (e.g. deletes) — nothing to parse
+  if (res.status === 204) return undefined as T;
+  const text = await res.text();
+  if (!text) return undefined as T;
+  return JSON.parse(text) as T;
 }
 
 export interface Participant { id: string; username: string; avatarUrl: string | null }
@@ -33,9 +37,37 @@ export interface Session {
   participants?: { user: Participant }[];
 }
 
+export interface AgentMessage {
+  id: string;
+  threadId: string;
+  role: string;
+  content: any;
+  createdAt: string;
+}
+export interface ContextSnapshot {
+  id: string;
+  threadId: string;
+  focusFileId?: string;
+  cursor?: { line: number; col: number };
+  selection?: { startLine: number; startCol: number; endLine: number; endCol: number };
+  openFileIds: string[];
+  createdAt: string;
+}
+export interface AgentThread {
+  id: string;
+  sessionId: string;
+  userId: string;
+  title: string | null;
+  createdAt: string;
+  archivedAt: string | null;
+  messages: AgentMessage[];
+  contextSnapshots?: ContextSnapshot[];
+}
+
 export const api = {
   auth: {
     me: () => apiFetch<{ id: string; username: string; email: string | null; avatarUrl: string | null }>('/me'),
+    meToken: () => apiFetch<{ accessToken: string }>('/me/token'),
   },
   sessions_clone: (sessionId: string) =>
     apiFetch<{ files: Record<string, string> }>(`/sessions/${sessionId}/clone`, { method: 'POST' }),
@@ -55,5 +87,46 @@ export const api = {
     get: (id: string) => apiFetch<Session>(`/sessions/${id}`),
     join: (id: string) => apiFetch<Session>(`/sessions/${id}/join`, { method: 'POST' }),
     delete: (id: string) => apiFetch<void>(`/sessions/${id}`, { method: 'DELETE' }),
+  },
+  agentThreads: {
+    list: (sessionId: string) =>
+      apiFetch<AgentThread[]>(`/sessions/${sessionId}/agent-threads`),
+    create: (sessionId: string, title?: string) =>
+      apiFetch<AgentThread>(`/sessions/${sessionId}/agent-threads`, {
+        method: 'POST',
+        body: JSON.stringify({ title }),
+      }),
+    get: (sessionId: string, threadId: string) =>
+      apiFetch<AgentThread>(`/sessions/${sessionId}/agent-threads/${threadId}`),
+    addMessage: (sessionId: string, threadId: string, role: string, content: any) =>
+      apiFetch<AgentMessage>(`/sessions/${sessionId}/agent-threads/${threadId}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ role, content }),
+      }),
+    addContextSnapshot: (
+      sessionId: string,
+      threadId: string,
+      data: {
+        focusFileId?: string;
+        cursor?: { line: number; col: number };
+        selection?: { startLine: number; startCol: number; endLine: number; endCol: number };
+        openFileIds: string[];
+      },
+    ) =>
+      apiFetch<ContextSnapshot>(`/sessions/${sessionId}/agent-threads/${threadId}/context-snapshots`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    updateTitle: (sessionId: string, threadId: string, title: string) =>
+      apiFetch<AgentThread>(`/sessions/${sessionId}/agent-threads/${threadId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title }),
+      }),
+    archive: (sessionId: string, threadId: string) =>
+      apiFetch<AgentThread>(`/sessions/${sessionId}/agent-threads/${threadId}/archive`, {
+        method: 'PATCH',
+      }),
+    delete: (sessionId: string, threadId: string) =>
+      apiFetch<void>(`/sessions/${sessionId}/agent-threads/${threadId}`, { method: 'DELETE' }),
   },
 };
