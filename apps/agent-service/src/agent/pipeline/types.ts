@@ -1,4 +1,4 @@
-export type Risk = 'low' | 'medium' | 'high';
+export type Risk = "low" | "medium" | "high";
 
 export interface PlanStep {
   description: string;
@@ -28,7 +28,12 @@ export interface ValidationResult {
 export interface EditorFocus {
   focusFileId?: string;
   cursor?: { line: number; col: number };
-  selection?: { startLine: number; startCol: number; endLine: number; endCol: number };
+  selection?: {
+    startLine: number;
+    startCol: number;
+    endLine: number;
+    endCol: number;
+  };
   openFileIds: string[];
 }
 
@@ -60,9 +65,9 @@ export interface PendingApply {
 // The service catches it distinctly so the client gets a `cancelled` signal
 // instead of a generic failure.
 export class AgentCancelledError extends Error {
-  constructor(message = 'Agent run cancelled') {
+  constructor(message = "Agent run cancelled") {
     super(message);
-    this.name = 'AgentCancelledError';
+    this.name = "AgentCancelledError";
   }
 }
 

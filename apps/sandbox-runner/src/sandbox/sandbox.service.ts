@@ -16,15 +16,12 @@ import { Duplex, PassThrough } from 'stream';
 import {
   CONTAINER_IMAGE,
   CONTAINER_NAME_PREFIX,
-  CONTAINER_MEMORY,
-  CONTAINER_CPUS,
+  CONTAINER_MEMORY_MB,
+  CONTAINER_CPUS as DEFAULT_CONTAINER_CPUS,
   CONTAINER_PIDS_LIMIT,
   WORKSPACE_DIR,
   SANDBOX_NETWORK_NAME,
   SETUP_PACKAGES,
-  DEFAULT_MAX_CONTAINERS,
-  DEFAULT_IDLE_TIMEOUT_MS,
-  SWEEPER_INTERVAL_MS,
   IGNORED_DIRS,
   PREVIEW_PORTS,
 } from './constants';
@@ -105,19 +102,20 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
     string,
     { exec: Docker.Exec; stream: Duplex; container: Docker.Container }
   >();
-  private readonly maxContainers: number;
-  private readonly idleTimeoutMs: number;
+  private readonly containerMemoryBytes: number;
+  private readonly containerCpus: number;
   private readonly workspaceRoot: string;
-  private sweeper: NodeJS.Timeout | null = null;
 
   constructor(private readonly config: ConfigService) {
-    this.maxContainers = parseInt(
-      config.get('MAX_CONTAINERS') ?? `${DEFAULT_MAX_CONTAINERS}`,
-      10,
-    );
-    this.idleTimeoutMs = parseInt(
-      config.get('CONTAINER_IDLE_TIMEOUT_MS') ?? `${DEFAULT_IDLE_TIMEOUT_MS}`,
-      10,
+    this.containerMemoryBytes =
+      parseInt(
+        config.get('SANDBOX_CONTAINER_MEMORY_MB') ?? `${CONTAINER_MEMORY_MB}`,
+        10,
+      ) *
+      1024 *
+      1024;
+    this.containerCpus = parseFloat(
+      config.get('SANDBOX_CONTAINER_CPUS') ?? `${DEFAULT_CONTAINER_CPUS}`,
     );
     this.workspaceRoot =
       config.get('SANDBOX_WORKSPACE_ROOT') ??
@@ -133,10 +131,8 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit() {
-    this.sweeper = setInterval(() => {
-      this.sweep().catch((e) => this.log.error('sweep error', e));
-    }, SWEEPER_INTERVAL_MS);
-    this.sweeper.unref();
+    // Containers are never auto-removed: they live until the session that owns
+    // them is deleted (SandboxService.destroyContainer). No idle reaper / cap.
     try {
       await this.docker.info();
       this.log.log('Docker daemon connected');
@@ -161,7 +157,6 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleDestroy() {
-    if (this.sweeper) clearInterval(this.sweeper);
     for (const key of [...this.previewBridges.keys()]) {
       const bridge = this.previewBridges.get(key);
       this.previewBridges.delete(key);
@@ -238,7 +233,9 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
     cwd?: string,
   ): Promise<ExecRun> {
     if (this.busyExecs.has(sessionId)) {
-      throw new ConflictException('a command is already running for this sandbox');
+      throw new ConflictException(
+        'a command is already running for this sandbox',
+      );
     }
     const entry = await this.ensureContainer(sessionId);
     entry.lastUsedAt = Date.now();
@@ -266,7 +263,11 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
     const stdout = new PassThrough();
     const stderr = new PassThrough();
     try {
-      const modem = (entry.container as unknown as { modem?: { demuxStream: (s: any, o: any, e: any) => void } }).modem;
+      const modem = (
+        entry.container as unknown as {
+          modem?: { demuxStream: (s: any, o: any, e: any) => void };
+        }
+      ).modem;
       modem?.demuxStream(stream, stdout, stderr);
     } catch {
       // fall back to raw stdout if demux is unavailable
@@ -276,6 +277,13 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
     const result: ExecRunResult = { exitCode: null, timeout: false };
     let settled = false;
     let timer: NodeJS.Timeout | null = null;
+    // `done` resolves in finish() (process exit, stream close, or timeout).
+    // Previously nothing ever resolved it, so the controller's `await run.done`
+    // hung forever and every terminal tool stalled with no exit frame.
+    let resolveDone!: (r: ExecRunResult) => void;
+    const done = new Promise<ExecRunResult>((resolve) => {
+      resolveDone = resolve;
+    });
 
     const finish = async (timedOut: boolean) => {
       if (settled) return;
@@ -291,9 +299,9 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
         result.exitCode = null;
       }
       result.timeout = timedOut;
-      // Force-close the hijack stream so `done` resolves (and the controller
-      // sends the exit frame) even if Docker never signals the socket close —
-      // otherwise the caller's fetch aborts with a confusing "timed out".
+      // Force-close the hijack stream so the caller's fetch gets a definitive
+      // end even if Docker never signals the socket close — otherwise it aborts
+      // with a confusing "timed out".
       try {
         stream.destroy();
       } catch {
@@ -301,6 +309,7 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
       }
       stdout.end();
       stderr.end();
+      resolveDone(result);
     };
 
     if (timeoutMs > 0) {
@@ -314,7 +323,9 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
             if (info.Running) {
               result.timeout = true;
               if (info.Pid) {
-                await this.killExecProcess(entry.container, info.Pid).catch(() => {});
+                await this.killExecProcess(entry.container, info.Pid).catch(
+                  () => {},
+                );
               }
             } else {
               result.exitCode = info.ExitCode ?? null;
@@ -332,17 +343,18 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
         this.busyExecs.delete(sessionId);
       }
     };
-    stream.on('end', clearBusy);
-    stream.on('close', clearBusy);
-    stream.on('error', clearBusy);
+    // Natural process exit usually surfaces as stream 'end'/'close'. Trigger
+    // finish() there so the exit frame arrives promptly instead of waiting for
+    // the timeout timer. finish() is idempotent (settled guard) and destroy()ing
+    // the stream re-enters here harmlessly.
+    const onStreamDone = () => {
+      clearBusy();
+      void finish(result.timeout);
+    };
+    stream.on('end', onStreamDone);
+    stream.on('close', onStreamDone);
+    stream.on('error', onStreamDone);
     this.busyExecs.set(sessionId, { exec, stream, container: entry.container });
-
-    const done = new Promise<ExecRunResult>((resolve) => {
-      const onEnd = () => void finish(result.timeout);
-      stream.on('end', onEnd);
-      stream.on('close', onEnd);
-      stream.on('error', onEnd);
-    });
 
     return { stdout, stderr, status, done };
   }
@@ -413,8 +425,7 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
     const info = await entry.container.inspect();
     const ports: Array<{ port: number; hostPort: number; url: string }> = [];
     for (const p of PREVIEW_PORTS) {
-      const published =
-        info.NetworkSettings?.Ports?.[`${p}/tcp`] ?? [];
+      const published = info.NetworkSettings?.Ports?.[`${p}/tcp`] ?? [];
       const binding =
         published.find((b) => b.HostIp === '127.0.0.1') ?? published[0];
       if (binding?.HostPort) {
@@ -483,9 +494,7 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
           // [type:1B, 0,0,0, size:4B BE][payload]
           let pending: Buffer<ArrayBufferLike> = Buffer.alloc(0);
           execStream.on('data', (chunk: Buffer) => {
-            pending = pending.length
-              ? Buffer.concat([pending, chunk])
-              : chunk;
+            pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
             while (pending.length >= 8) {
               const type = pending[0];
               const size = pending.readUInt32BE(4);
@@ -577,8 +586,8 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
         // tini as PID 1 so exited exec processes (shells, bridges, builds)
         // get reaped instead of piling up as zombies against the pids limit
         Init: true,
-        Memory: CONTAINER_MEMORY,
-        NanoCpus: CONTAINER_CPUS * 1e9,
+        Memory: this.containerMemoryBytes,
+        NanoCpus: this.containerCpus * 1e9,
         PidsLimit: CONTAINER_PIDS_LIMIT,
         Binds: [`${workspaceDir}:${WORKSPACE_DIR}`],
         PortBindings: Object.fromEntries(
@@ -636,11 +645,10 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
     return entry;
   }
 
-  // Keeps a session's container alive and provisions it (apt install) without
-  // blocking on a command. The agent-service calls this during planning and
-  // periodically while the agent runs, so the idle reaper / capacity eviction
-  // can't destroy the container mid-run and the first exec doesn't stall on
-  // package installation. Idempotent — provisioning is deduped via `provisioning`.
+  // Keeps a session's container provisioned (apt install) without blocking on a
+  // command. Containers are never auto-removed, so this only ensures the first
+  // exec doesn't stall on package installation. Idempotent — provisioning is
+  // deduped via `provisioning`.
   async touch(sessionId: string): Promise<void> {
     const entry = await this.ensureContainer(sessionId);
     entry.lastUsedAt = Date.now();
@@ -649,9 +657,26 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
 
   private provision(entry: SandboxEntry): Promise<void> {
     if (entry.provisioned) return Promise.resolve();
-    if (entry.provisioning) return entry.provisioning;
-    entry.provisioning = this.doProvision(entry);
-    return entry.provisioning;
+    // A provision attempt that has been stuck for a long time (e.g. dockerode
+    // never emitting stream close) must not hold the container hostage forever —
+    // replace it with a fresh attempt so a later exec can recover.
+    const staleAfterMs = 300_000;
+    const pending = entry.provisioning as (Promise<void> & {
+      startedAt?: number;
+    }) | null;
+    if (
+      pending &&
+      (typeof pending.startedAt !== 'number' ||
+        Date.now() - pending.startedAt < staleAfterMs)
+    ) {
+      return pending;
+    }
+    const attempt = this.doProvision(entry) as Promise<void> & {
+      startedAt: number;
+    };
+    attempt.startedAt = Date.now();
+    entry.provisioning = attempt;
+    return attempt;
   }
 
   private async doProvision(entry: SandboxEntry) {
@@ -664,18 +689,38 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
         Tty: false,
         User: 'root',
       });
-      const stream = await exec.start({ hijack: false, stdin: false });
       let out = '';
-      stream.on('data', (c: Buffer) => {
-        out += c.toString();
-      });
-      await new Promise<void>((resolve, reject) => {
-        stream.on('end', () => resolve());
-        stream.on('close', () => resolve());
-        stream.on('error', reject);
-      });
-      const info = await exec.inspect();
-      if (info.ExitCode !== 0) {
+      try {
+        // Collect output, but never rely on the hijacked stream's end/close
+        // events — dockerode does not always emit them with hijack:false, and
+        // a provision promise that never settles poisons `entry.provisioning`
+        // for the whole container (every later exec hangs on it). Poll
+        // exec.inspect() until the process exits, with a hard deadline.
+        const stream = await exec.start({ hijack: false, stdin: false });
+        stream.on('data', (c: Buffer) => {
+          out += c.toString();
+        });
+        const deadline = Date.now() + 240_000;
+        for (;;) {
+          const info = await exec.inspect().catch(() => null);
+          if (info && !info.Running && info.ExitCode !== null) break;
+          if (Date.now() > deadline) {
+            this.log.warn(
+              `provision timed out after 240s for ${entry.containerId.slice(0, 12)}`,
+            );
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        stream.destroy();
+      } catch (e) {
+        // stream setup failed — treat as still-unprovisioned but do NOT leave a
+        // pending promise; the next call retries from scratch.
+        this.log.warn(`provision stream error: ${(e as Error)?.message}`);
+        return;
+      }
+      const info = await exec.inspect().catch(() => null);
+      if (info && info.ExitCode !== 0) {
         this.log.warn(
           `provision failed (exit ${info.ExitCode}): ${out.slice(-2000)}`,
         );
@@ -751,7 +796,8 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
     return files;
   }
 
-  private sanitizeRelPath(relPath: string): string {    const normalized = path.normalize(relPath).replace(/\\/g, '/');
+  private sanitizeRelPath(relPath: string): string {
+    const normalized = path.normalize(relPath).replace(/\\/g, '/');
     if (
       normalized.startsWith('../') ||
       normalized === '..' ||
@@ -760,35 +806,6 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
       throw new BadRequestException(`Invalid file path: ${relPath}`);
     }
     return normalized;
-  }
-
-  private async sweep() {    const now = Date.now();
-
-    const idle: string[] = [];
-    for (const [id, entry] of this.entries) {
-      if (now - entry.lastUsedAt > this.idleTimeoutMs) {
-        idle.push(id);
-      }
-    }
-    for (const id of idle) {
-      const entry = this.entries.get(id)!;
-      this.log.log(`Evicting idle container for session ${id}`);
-      await this.destroyEntry(entry);
-      this.entries.delete(id);
-    }
-
-    while (this.entries.size > this.maxContainers) {
-      const candidates = [...this.entries.entries()].sort(
-        (a, b) => a[1].lastUsedAt - b[1].lastUsedAt,
-      );
-      if (candidates.length === 0) break;
-      const [id, entry] = candidates[0];
-      this.log.log(
-        `Evicting oldest container for session ${id} (${this.entries.size} > ${this.maxContainers})`,
-      );
-      await this.destroyEntry(entry);
-      this.entries.delete(id);
-    }
   }
 
   private async destroyEntry(entry: SandboxEntry) {
@@ -841,7 +858,12 @@ export class SandboxService implements OnModuleInit, OnModuleDestroy {
     }
     for (const key of [...this.previewBridges.keys()]) {
       const bridge = this.previewBridges.get(key);
-      if (bridge && key.startsWith(entry?.containerId ?? `${CONTAINER_NAME_PREFIX}-${sessionId}:`)) {
+      if (
+        bridge &&
+        key.startsWith(
+          entry?.containerId ?? `${CONTAINER_NAME_PREFIX}-${sessionId}:`,
+        )
+      ) {
         this.previewBridges.delete(key);
         try {
           bridge.server.close();

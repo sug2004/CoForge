@@ -1,6 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { fetchWithTimeout } from './http';
+import { Injectable, Logger } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { fetchWithTimeout } from "./http";
 
 export interface SandboxRunResult {
   exitCode: number | null;
@@ -9,7 +9,7 @@ export interface SandboxRunResult {
 }
 
 interface NdjsonFrame {
-  stream?: 'stdout' | 'stderr' | 'status' | 'exit' | 'error';
+  stream?: "stdout" | "stderr" | "status" | "exit" | "error";
   chunk?: string;
   exitCode?: number | null;
   timeout?: boolean;
@@ -25,7 +25,8 @@ export class SandboxClient {
   private readonly runnerUrl: string;
 
   constructor(config: ConfigService) {
-    this.runnerUrl = config.get('SANDBOX_RUNNER_URL') ?? 'http://localhost:3004';
+    this.runnerUrl =
+      config.get("SANDBOX_RUNNER_URL") ?? "http://localhost:3004";
   }
 
   async pushFiles(
@@ -36,13 +37,14 @@ export class SandboxClient {
     const res = await fetchWithTimeout(
       `${this.runnerUrl}/sandbox/${encodeURIComponent(sandboxId)}/files`,
       {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ files, deleted }),
       },
       60_000,
     );
-    if (!res.ok) throw new Error(`failed to push files to sandbox (${res.status})`);
+    if (!res.ok)
+      throw new Error(`failed to push files to sandbox (${res.status})`);
   }
 
   // Keeps the container alive (and provisions it if needed) without running a
@@ -55,7 +57,7 @@ export class SandboxClient {
   async touch(sandboxId: string): Promise<void> {
     const res = await fetchWithTimeout(
       `${this.runnerUrl}/sandbox/${encodeURIComponent(sandboxId)}/touch`,
-      { method: 'POST' },
+      { method: "POST" },
       300_000,
     );
     if (!res.ok) throw new Error(`failed to touch sandbox (${res.status})`);
@@ -69,25 +71,29 @@ export class SandboxClient {
     sandboxId: string,
     command: string,
     timeoutMs: number,
-    onChunk?: (chunk: string, stream: 'stdout' | 'stderr') => void,
+    onChunk?: (chunk: string, stream: "stdout" | "stderr") => void,
     signal?: AbortSignal,
     cwd?: string,
   ): Promise<SandboxRunResult> {
     const res = await fetchWithTimeout(
       `${this.runnerUrl}/sandbox/${encodeURIComponent(sandboxId)}/exec`,
       {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ command, timeoutMs, ...(cwd ? { cwd } : {}) }),
         signal,
       },
       // The runner enforces the exec's own timeoutMs internally; the HTTP
-      // stream must stay open through it, so give it a margin on top.
-      timeoutMs + 30_000,
+      // stream must stay open through it, and provisioning (image pull +
+      // apt-get on a cold container) happens before the exec starts, so give
+      // it a generous margin on top.
+      timeoutMs + 120_000,
     );
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(`sandbox exec failed (${res.status}): ${err?.error ?? 'unknown error'}`);
+      throw new Error(
+        `sandbox exec failed (${res.status}): ${err?.error ?? "unknown error"}`,
+      );
     }
 
     const output: string[] = [];
@@ -96,17 +102,21 @@ export class SandboxClient {
 
     const reader = res.body?.getReader();
     if (!reader) {
-      return { exitCode: null, output: 'no response body from sandbox', timedOut: false };
+      return {
+        exitCode: null,
+        output: "no response body from sandbox",
+        timedOut: false,
+      };
     }
 
     const decoder = new TextDecoder();
-    let buffer = '';
+    let buffer = "";
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
       for (const line of lines) {
         if (!line.trim()) continue;
         let frame: NdjsonFrame;
@@ -115,26 +125,26 @@ export class SandboxClient {
         } catch {
           continue;
         }
-        if (frame.stream === 'stdout' || frame.stream === 'stderr') {
+        if (frame.stream === "stdout" || frame.stream === "stderr") {
           if (frame.chunk) {
             output.push(frame.chunk);
             onChunk?.(frame.chunk, frame.stream);
           }
-        } else if (frame.stream === 'status') {
+        } else if (frame.stream === "status") {
           if (frame.chunk) {
             output.push(frame.chunk);
-            onChunk?.(frame.chunk, 'stdout');
+            onChunk?.(frame.chunk, "stdout");
           }
-        } else if (frame.stream === 'exit') {
+        } else if (frame.stream === "exit") {
           exitCode = frame.exitCode ?? null;
           timedOut = !!frame.timeout;
-        } else if (frame.stream === 'error') {
-          output.push(`sandbox error: ${frame.error ?? 'unknown'}`);
+        } else if (frame.stream === "error") {
+          output.push(`sandbox error: ${frame.error ?? "unknown"}`);
           exitCode = exitCode ?? 1;
         }
       }
     }
 
-    return { exitCode, output: output.join(''), timedOut };
+    return { exitCode, output: output.join(""), timedOut };
   }
 }

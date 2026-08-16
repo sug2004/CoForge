@@ -34,7 +34,7 @@ Multiple developers edit code together live in a shared Yjs document. The agent 
 │  sync-server    │   │  sync-server          │   │  agent-service  :3005   │
 │  :3001          │   │  /agent namespace     │   │  planner → coder →      │
 │  Yjs CRDT room  │◄──►│  agent:phase_started  │   │  tester → applier       │
-│  per session    │   │  agent:tool_started   │◄──►│  (LlmClient: NVIDIA or  │
+│  per session    │   │  agent:tool_started   │◄──►│  (LlmClient: NVIDIA NIM │
 │  sandbox shell  │   │  agent:tool_result    │   │   Anthropic)            │
 │  WS :3001       │   │  agent:message        │   └───────────┬────────────┘
 └────────┬────────┘   │  agent:edit_proposed  │               │ tools / exec
@@ -113,7 +113,7 @@ CoForge/
 | Backend | NestJS (all services) |
 | Database | PostgreSQL via Prisma (with `@prisma/adapter-pg`) |
 | Sandboxing | Docker via dockerode (`node:20-slim`, memory/cpu/pid limits) |
-| AI providers | NVIDIA NIM (OpenAI-compatible, default) or Anthropic Claude |
+| AI providers | GLM-5.2 Free API on NVIDIA NIM (OpenAI-compatible) |
 | Language | TypeScript throughout |
 
 ---
@@ -150,16 +150,18 @@ cd apps/web            && pnpm install && pnpm dev          # :3000
 
 ### Model provider for the agent
 
-The agent reads `apps/agent-service/.env` (gitignored). Two providers are supported via `LLM_PROVIDER`:
+The agent reads `apps/agent-service/.env` (gitignored). It uses a single provider —
+**GLM-5.2 Free API on NVIDIA NIM** (OpenAI-compatible):
 
-- `nvidia` (default) — NVIDIA NIM OpenAI-compatible endpoint.
-  `NVIDIA_API_KEY`, `NVIDIA_BASE_URL`, plus `NVIDIA_PLANNER_MODEL` / `NVIDIA_CODER_MODEL` / `NVIDIA_MEMORY_MODEL`.
-- `anthropic` — `ANTHROPIC_API_KEY`, plus `PLANNER_MODEL` / `CODER_MODEL` / `MEMORY_MODEL`.
+- `NVIDIA_API_KEY` (free key from https://build.nvidia.com)
+- `NVIDIA_BASE_URL` default `https://integrate.api.nvidia.com/v1`
+- `NVIDIA_MODEL` default `z-ai/glm-5.2` (used for all phases; override per phase
+  with `NVIDIA_PLANNER_MODEL` / `NVIDIA_CODER_MODEL` / `NVIDIA_MEMORY_MODEL` /
+  `NVIDIA_CHAT_MODEL`, or the generic `PLANNER_MODEL` / `CODER_MODEL` /
+  `MEMORY_MODEL` / `CHAT_MODEL`).
 
-Users can also pick a provider and paste their own API key per request from the
-Agent panel ⚙ menu (stored in the browser, sent with that request only). A stale
-override key is automatically ignored in favor of the server key when the provider
-rejects it (401/403).
+Transient 429/5xx/timeouts are retried with backoff; a hard auth failure
+(401/403) with a client-supplied override key falls back to the server key.
 
 ---
 
@@ -173,16 +175,10 @@ GITHUB_CLIENT_SECRET=
 JWT_SECRET=                       # keep in sync with sync-server process env
 
 # agent-service  (apps/agent-service/.env)
-LLM_PROVIDER=nvidia|anthropic
-NVIDIA_API_KEY=
+NVIDIA_API_KEY=                       # from https://build.nvidia.com
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
-NVIDIA_PLANNER_MODEL=
-NVIDIA_CODER_MODEL=
-NVIDIA_MEMORY_MODEL=
-ANTHROPIC_API_KEY=
-PLANNER_MODEL=
-CODER_MODEL=
-MEMORY_MODEL=
+NVIDIA_MODEL=z-ai/glm-5.2
+# optional per-phase: NVIDIA_PLANNER_MODEL / NVIDIA_CODER_MODEL / NVIDIA_MEMORY_MODEL / NVIDIA_CHAT_MODEL
 CORE_API_URL=http://localhost:3002
 SYNC_SERVER_URL=http://localhost:3001
 SANDBOX_RUNNER_URL=http://localhost:3004
@@ -192,6 +188,8 @@ AGENT_AUTO_APPLY=true             # auto-apply low-risk edits without review
 DOCKER_HOST=                      # default: Docker Desktop named pipe on Windows
 MAX_CONTAINERS=10
 CONTAINER_IDLE_TIMEOUT_MS=900000  # idle containers evicted after 15 min
+SANDBOX_CONTAINER_MEMORY_MB=2048  # per-container RAM (default 2048)
+SANDBOX_CONTAINER_CPUS=2          # per-container CPUs (default 2)
 SANDBOX_WORKSPACE_ROOT=
 ```
 

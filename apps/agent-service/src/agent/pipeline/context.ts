@@ -1,8 +1,12 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { fetchWithTimeout } from './http';
-import { AgentContext, EditorFocus } from './types';
-import { detectTestCommand, extractInstructions, summarizeProject } from './project';
+import { Injectable, Logger } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
+import { fetchWithTimeout } from "./http";
+import { AgentContext, EditorFocus } from "./types";
+import {
+  detectTestCommand,
+  extractInstructions,
+  summarizeProject,
+} from "./project";
 
 interface MemoryMessage {
   role: string;
@@ -16,14 +20,12 @@ export class ContextService {
   private readonly syncServerUrl: string;
 
   constructor(private readonly config: ConfigService) {
-    this.coreApiUrl = config.get('CORE_API_URL') ?? 'http://localhost:3002';
-    this.syncServerUrl = config.get('SYNC_SERVER_URL') ?? 'http://localhost:3001';
+    this.coreApiUrl = config.get("CORE_API_URL") ?? "http://localhost:3002";
+    this.syncServerUrl =
+      config.get("SYNC_SERVER_URL") ?? "http://localhost:3001";
   }
 
-  private async get(
-    url: string,
-    token?: string,
-  ): Promise<any | null> {
+  private async get(url: string, token?: string): Promise<any | null> {
     try {
       const res = await fetchWithTimeout(
         url,
@@ -35,7 +37,9 @@ export class ContextService {
       if (!text.trim()) return null;
       return JSON.parse(text);
     } catch (e) {
-      this.logger.warn(`core-api request failed: ${url} — ${(e as Error).message}`);
+      this.logger.warn(
+        `core-api request failed: ${url} — ${(e as Error).message}`,
+      );
       return null;
     }
   }
@@ -45,8 +49,8 @@ export class ContextService {
       const res = await fetchWithTimeout(
         url,
         {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         },
         10_000,
@@ -61,7 +65,10 @@ export class ContextService {
     }
   }
 
-  async getProjectId(sessionId: string, token?: string): Promise<string | null> {
+  async getProjectId(
+    sessionId: string,
+    token?: string,
+  ): Promise<string | null> {
     const session = await this.get(
       `${this.coreApiUrl}/sessions/${encodeURIComponent(sessionId)}`,
       token,
@@ -74,7 +81,7 @@ export class ContextService {
       `${this.coreApiUrl}/projects/${encodeURIComponent(projectId)}/memory`,
       token,
     );
-    return mem?.summary ?? '';
+    return mem?.summary ?? "";
   }
 
   async getUserPreferences(
@@ -86,7 +93,7 @@ export class ContextService {
       `${this.coreApiUrl}/projects/${encodeURIComponent(projectId)}/preferences`,
       token,
     );
-    return prefs?.notes ?? '';
+    return prefs?.notes ?? "";
   }
 
   async getWorkingMemory(
@@ -102,7 +109,9 @@ export class ContextService {
   }
 
   async getFiles(sessionId: string): Promise<Record<string, string>> {
-    const res = await this.post(`${this.syncServerUrl}/sync/files`, { sessionId });
+    const res = await this.post(`${this.syncServerUrl}/sync/files`, {
+      sessionId,
+    });
     return res?.files ?? {};
   }
 
@@ -119,31 +128,45 @@ export class ContextService {
     const projectId = await this.getProjectId(sessionId, token);
     const [projectMemory, userPreferences, rawMessages, files] =
       await Promise.all([
-        projectId ? this.getProjectMemory(projectId, token) : Promise.resolve(''),
+        projectId
+          ? this.getProjectMemory(projectId, token)
+          : Promise.resolve(""),
         projectId
           ? this.getUserPreferences(projectId, userId, token)
-          : Promise.resolve(''),
+          : Promise.resolve(""),
         this.getWorkingMemory(sessionId, threadId, token),
         this.getFiles(sessionId),
       ]);
 
-    // Working memory: last ~20 turns verbatim, large payloads truncated.
-    const workingMemory = rawMessages
-      .slice(-20)
-      .map((m) => {
-        let text: string;
-        if (typeof m.content === 'string') text = m.content;
-        else if (m.content?.text) text = m.content.text;
-        else if (m.content?.plan) text = `plan: ${JSON.stringify(m.content.plan)}`;
-        else text = JSON.stringify(m.content);
-        return {
-          role: m.role === 'user' ? 'user' : 'assistant',
-          text: text.length > 4000 ? `${text.slice(0, 4000)}… (truncated)` : text,
-        };
-      });
+    // Working memory: last ~20 turns verbatim, large payloads truncated. Each
+    // turn is capped hard — these messages are replayed verbatim into every
+    // planner/coder request, and the free Groq tier (~6000 TPM) rejects
+    // oversized prompts, so keep them compact.
+    const workingMemory = rawMessages.slice(-20).map((m) => {
+      let text: string;
+      if (typeof m.content === "string") text = m.content;
+      else if (m.content?.text) text = m.content.text;
+      else if (m.content?.plan)
+        text = `plan: ${JSON.stringify(m.content.plan)}`;
+      else text = JSON.stringify(m.content);
+      return {
+        role: m.role === "user" ? "user" : "assistant",
+        text: text.length > 800 ? `${text.slice(0, 800)}… (truncated)` : text,
+      };
+    });
+
+    // Project memory is replayed verbatim into every planner/coder system
+    // prompt. The memory writer produces long, prose-heavy summaries; on the
+    // free Groq tier (~6000 TPM, counting input + max_tokens) a multi-KB
+    // summary alone can push a request over the limit, so cap what we inject.
+    const PROJECT_MEMORY_CAP = 1_200;
+    const projectMemoryCapped =
+      projectMemory.length > PROJECT_MEMORY_CAP
+        ? `${projectMemory.slice(0, PROJECT_MEMORY_CAP)}\n… (memory truncated)`
+        : projectMemory;
 
     return {
-      projectMemory,
+      projectMemory: projectMemoryCapped,
       userPreferences,
       workingMemory,
       files,

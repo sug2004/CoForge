@@ -541,6 +541,7 @@ export default function Editor({ sessionId }: { sessionId: string }) {
   const [activeFile, setActiveFile] = useState<string>('');
   const [quickOpen, setQuickOpen] = useState(false);
   const [showExplorer, setShowExplorer] = useState(true);
+  const [termCollapsed, setTermCollapsed] = useState(false);
   const [language, setLanguage] = useState('plaintext');
   const [cloning, setCloning] = useState(false);
   const [peers, setPeers] = useState<Peer[]>([]);
@@ -887,8 +888,8 @@ export default function Editor({ sessionId }: { sessionId: string }) {
   }, []);
 
   // Ctrl+E (or Cmd+E on macOS) toggles the quick-open file picker; Ctrl+B
-  // toggles the explorer sidebar. Capture phase + stopPropagation so both win
-  // over Monaco's keybindings.
+  // toggles the explorer sidebar; Ctrl+J toggles the terminal. Capture phase +
+  // stopPropagation so all win over Monaco's keybindings.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'e') {
@@ -899,6 +900,10 @@ export default function Editor({ sessionId }: { sessionId: string }) {
         e.preventDefault();
         e.stopPropagation();
         setShowExplorer((v) => !v);
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        e.stopPropagation();
+        setTermCollapsed((v) => !v);
       }
     }
     window.addEventListener('keydown', onKeyDown, true);
@@ -1004,7 +1009,7 @@ export default function Editor({ sessionId }: { sessionId: string }) {
         </div>
         {userId && <AgentPanel sessionId={sessionId} userId={userId} editorRef={editorRef} ydocRef={ydocRef} />}
       </div>
-      <SandboxPanel sessionId={sessionId} />
+      <SandboxPanel sessionId={sessionId} collapsed={termCollapsed} onToggleCollapse={() => setTermCollapsed((v) => !v)} />
     </div>
   );
 }

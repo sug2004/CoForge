@@ -58,11 +58,12 @@ type Tab = 'terminal' | 'preview';
 
 interface Props {
   sessionId: string;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
 }
 
-export default function SandboxPanel({ sessionId }: Props) {
+export default function SandboxPanel({ sessionId, collapsed, onToggleCollapse }: Props) {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
-  const [collapsed, setCollapsed] = useState(false);
   const [panelH, setPanelH] = useState(DEFAULT_H);
   const [tab, setTab] = useState<Tab>('terminal');
   const [previewPort, setPreviewPort] = useState('3000');
@@ -86,11 +87,9 @@ export default function SandboxPanel({ sessionId }: Props) {
   }, []);
 
   const toggleCollapse = useCallback(() => {
-    setCollapsed((prev) => {
-      if (!prev) lastHRef.current = panelH;
-      return !prev;
-    });
-  }, [panelH]);
+    if (!collapsed) lastHRef.current = panelH;
+    onToggleCollapse();
+  }, [collapsed, panelH, onToggleCollapse]);
 
   useEffect(() => {
     if (collapsed) return;
@@ -269,7 +268,7 @@ export default function SandboxPanel({ sessionId }: Props) {
           e.preventDefault();
         }}
         onDoubleClick={toggleCollapse}
-        title="Drag to resize / double-click to collapse"
+        title="Drag to resize / double-click to collapse (Ctrl+J)"
         style={{
           position: 'absolute',
           top: 0,
@@ -302,7 +301,7 @@ export default function SandboxPanel({ sessionId }: Props) {
         <button
           type="button"
           onClick={toggleCollapse}
-          title={collapsed ? 'Expand terminal' : 'Collapse terminal'}
+          title={collapsed ? 'Expand terminal (Ctrl+J)' : 'Collapse terminal (Ctrl+J)'}
           style={{
             background: 'none',
             border: 'none',

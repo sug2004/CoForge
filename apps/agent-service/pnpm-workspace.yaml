@@ -1,2 +1,3 @@
+# Allow the eslint/typescript-eslint resolver to run its postinstall build.
 allowBuilds:
-  unrs-resolver: set this to true or false
+  unrs-resolver: true

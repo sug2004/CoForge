@@ -5,6 +5,7 @@ import { api, type AgentThread, type AgentMessage } from '@/lib/api';
 import { io, Socket } from 'socket.io-client';
 import { DiffEditor } from '@monaco-editor/react';
 import { useAgentContextReporter } from '@/hooks/useAgentContextReporter';
+import { Markdown, PlainText } from './Markdown';
 
 const SYNC_SERVER_URL = process.env.NEXT_PUBLIC_SYNC_SERVER_URL ?? 'http://localhost:3001';
 
@@ -94,6 +95,17 @@ function DiffView({
   );
 }
 
+// Map the raw phase ids emitted by the pipeline to friendly labels.
+const PHASE_LABELS: Record<string, string> = {
+  planning: 'Planning…',
+  coding: 'Coding…',
+  validating: 'Validating…',
+  applying: 'Applying…',
+};
+function phaseLabel(phase: string | null): string {
+  return phase ? (PHASE_LABELS[phase] ?? phase) : 'thinking';
+}
+
 export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
   sessionId: string;
   userId: string;
@@ -111,6 +123,8 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
   const [sending, setSending] = useState(false);
   const [currentPhase, setCurrentPhase] = useState<string | null>(null);
   const [phaseStep, setPhaseStep] = useState<number>(0);
+  const [lastResponseMs, setLastResponseMs] = useState<number | null>(null);
+  const [streamText, setStreamText] = useState<string>('');
   const [toolOutputs, setToolOutputs] = useState<Record<string, string>>({});
   const [plan, setPlan] = useState<Array<{ description: string; files: string[] }> | null>(null);
   const [pendingApply, setPendingApply] = useState<{
@@ -120,13 +134,11 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
   } | null>(null);
   const [expandedDiff, setExpandedDiff] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [providerChoice, setProviderChoice] = useState<'auto' | 'anthropic' | 'nvidia'>('auto');
-  const [providerKey, setProviderKey] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<Socket | null>(null);
   const tokenRef = useRef<string>('');
-  const sendWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const runStartRef = useRef<number | null>(null);
+  const [elapsedSecs, setElapsedSecs] = useState<number>(0);
   const [socketStatus, setSocketStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
 
   const [panelWidth, setPanelWidth] = useState<number>(() => {
@@ -165,19 +177,22 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
 
   useAgentContextReporter(sessionId, activeThreadId, editorRef, ydocRef);
 
-  // Per-user model provider settings (stored client-side only — keys never
-  // hit the server unless the user opts into a specific provider).
+  // Live elapsed-seconds ticker while a run is in flight (starts on send,
+  // stops when agent:done clears `sending`).
   useEffect(() => {
-    const saved = localStorage.getItem('coforge.llm.provider');
-    if (saved === 'anthropic' || saved === 'nvidia') setProviderChoice(saved);
-    setProviderKey(localStorage.getItem('coforge.llm.apikey') ?? '');
-  }, []);
-
-  const saveSettings = () => {
-    localStorage.setItem('coforge.llm.provider', providerChoice);
-    localStorage.setItem('coforge.llm.apikey', providerKey.trim());
-    setSettingsOpen(false);
-  };
+    if (!sending) {
+      runStartRef.current = null;
+      setElapsedSecs(0);
+      return;
+    }
+    runStartRef.current = runStartRef.current ?? Date.now();
+    const iv = setInterval(() => {
+      const start = runStartRef.current;
+      if (start == null) return;
+      setElapsedSecs(Math.floor((Date.now() - start) / 1000));
+    }, 500);
+    return () => clearInterval(iv);
+  }, [sending]);
 
   const fetchThreads = useCallback(async () => {
     try {
@@ -218,6 +233,7 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
       setMessages([]);
       setPlan(null);
       setCurrentPhase(null);
+      setStreamText('');
       setToolOutputs({});
       return;
     }
@@ -228,6 +244,7 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
     }
     setPlan(null);
     setCurrentPhase(null);
+    setStreamText('');
     setToolOutputs({});
 
     // Connect to socket for real-time updates
@@ -276,20 +293,58 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
 
     socket.on('agent:tool_result', (data: { threadId: string; toolCallId: string; result: any; isError: boolean }) => {
       if (data.threadId === threadId) {
-        setMessages(prev => [...prev, {
-          id: `temp-${Date.now()}`,
-          threadId,
-          role: 'assistant',
-          content: { tool_result: { toolCallId: data.toolCallId, result: data.result, isError: data.isError } },
-          createdAt: new Date().toISOString(),
-        }]);
+        // Merge the result into the matching tool_use message (by toolCallId)
+        // so the chat shows one tool card with its live output + final status,
+        // like opencode — not a separate raw-JSON bubble per event.
+        setMessages(prev => {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            const c = prev[i].content;
+            if (
+              c && typeof c === 'object' &&
+              'tool_use' in c &&
+              (c as any).tool_use.id === data.toolCallId
+            ) {
+              const copy = [...prev];
+              copy[i] = {
+                ...copy[i],
+                content: {
+                  ...(c as object),
+                  tool_result: {
+                    toolCallId: data.toolCallId,
+                    result: data.result,
+                    isError: data.isError,
+                  },
+                },
+              };
+              return copy;
+            }
+          }
+          // No matching tool_use (e.g. reload mid-run) — show a standalone card.
+          return [...prev, {
+            id: `temp-${Date.now()}`,
+            threadId,
+            role: 'assistant',
+            content: { tool_result: { toolCallId: data.toolCallId, result: data.result, isError: data.isError } },
+            createdAt: new Date().toISOString(),
+          }];
+        });
       }
     });
 
     socket.on('agent:phase_started', (data: { threadId: string; phase: string; stepIndex?: number }) => {
       if (data.threadId === threadId) {
         setCurrentPhase(data.phase);
+        setStreamText('');
         if (typeof data.stepIndex === 'number') setPhaseStep(data.stepIndex);
+      }
+    });
+
+    // Live token stream from the model (planning/coding LLM calls). Coalesced
+    // into ~120ms chunks server-side; appended to the phase indicator so the
+    // chat shows the agent working instead of a frozen "Planning…" label.
+    socket.on('agent:stream', (data: { threadId: string; chunk: string }) => {
+      if (data.threadId === threadId && data.chunk) {
+        setStreamText(prev => (prev + data.chunk).slice(-12_000));
       }
     });
 
@@ -356,37 +411,18 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
     // The agent-service acknowledges the invoke HTTP call immediately and
     // streams the whole run here. agent:done is the terminal signal — use it
     // to release the UI instead of waiting on the (now instant) HTTP response.
-    socket.on('agent:done', (data: { threadId: string }) => {
+    socket.on('agent:done', (data: { threadId: string; elapsedMs?: number }) => {
       if (data.threadId === threadId) {
-        clearSendWatchdog();
         setSending(false);
         setCurrentPhase(null);
         setPhaseStep(0);
+        setStreamText('');
         setToolOutputs({});
+        if (typeof data.elapsedMs === 'number' && data.elapsedMs > 0) {
+          setLastResponseMs(data.elapsedMs);
+        }
       }
     });
-  };
-
-  // The invoke HTTP call returns as soon as the job is accepted, so the run has
-  // no natural client-side completion signal other than `agent:done`. A long
-  // watchdog prevents the UI from staying stuck on "Working" forever if the
-  // socket drops mid-run; the agent may still finish in the background.
-  const startSendWatchdog = () => {
-    if (sendWatchdogRef.current) clearTimeout(sendWatchdogRef.current);
-    sendWatchdogRef.current = setTimeout(() => {
-      setSending(false);
-      setCurrentPhase(null);
-      setError(
-        'Agent response is taking unusually long. It may still arrive — if not, try again.',
-      );
-    }, 600_000);
-  };
-
-  const clearSendWatchdog = () => {
-    if (sendWatchdogRef.current) {
-      clearTimeout(sendWatchdogRef.current);
-      sendWatchdogRef.current = null;
-    }
   };
 
   // Connect the agent socket, resolving once the connection is established (or
@@ -567,10 +603,6 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
           prompt,
           focus: editorContext,
           token: tokenRef.current,
-          llm:
-            providerChoice === 'auto'
-              ? undefined
-              : { provider: providerChoice, apiKey: providerKey.trim() || undefined },
         }),
       });
 
@@ -596,12 +628,10 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
     const prompt = inputValue.trim();
     setInputValue('');
     setSending(true);
-    startSendWatchdog();
 
     try {
       await invokePrompt(activeThreadId, prompt);
     } catch (e: any) {
-      clearSendWatchdog();
       setSending(false);
       setError(e.message);
     }
@@ -717,7 +747,7 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
         },
       ).catch(() => {});
     } catch {
-      // agent:done (or the watchdog) will release the UI regardless.
+      // agent:done will release the UI regardless.
     }
   };
 
@@ -881,7 +911,17 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
             )}
             {currentPhase && (
               <div style={{ fontSize: 10, color: C.accent, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                {currentPhase}
+                {phaseLabel(currentPhase)}
+              </div>
+            )}
+            {sending && (
+              <div style={{ fontSize: 9, color: C.text2, fontFamily: 'JetBrains Mono, monospace' }}>
+                {elapsedSecs}s
+              </div>
+            )}
+            {lastResponseMs != null && !sending && !currentPhase && (
+              <div style={{ fontSize: 9, color: C.text2, fontFamily: 'JetBrains Mono, monospace' }}>
+                Last response: {(lastResponseMs / 1000).toFixed(1)}s
               </div>
             )}
             <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 3 }}>
@@ -907,13 +947,6 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
             </button>
           )}
           <button
-            onClick={() => { setSettingsOpen(s => !s); }}
-            title="Model settings"
-            style={{ background: 'none', border: 'none', color: C.text2, cursor: 'pointer', padding: 4, fontSize: 12, borderRadius: 4 }}
-          >
-            ⚙
-          </button>
-          <button
             onClick={() => setEditingTitle(true)}
             title="Rename"
             style={{ background: 'none', border: 'none', color: C.text2, cursor: 'pointer', padding: 4, fontSize: 12, borderRadius: 4 }}
@@ -938,56 +971,6 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
           </button>
         </div>
       </div>
-
-      {/* Model settings popover */}
-      {settingsOpen && (
-        <div style={{ position: 'absolute', top: 48, right: 14, width: 260, zIndex: 30, background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.5)' }}>
-          <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 700, color: C.accent, fontFamily: 'JetBrains Mono, monospace' }}>
-            Model Provider
-          </div>
-          <select
-            value={providerChoice}
-            onChange={(e) => setProviderChoice(e.target.value as typeof providerChoice)}
-            style={{
-              width: '100%', padding: '6px 8px', borderRadius: 6, background: C.bg,
-              border: `1px solid ${C.border}`, color: C.text1, fontSize: 12,
-              fontFamily: 'JetBrains Mono, monospace', outline: 'none',
-            }}
-          >
-            <option value="auto">Auto (server default)</option>
-            <option value="nvidia">NVIDIA (NIM)</option>
-            <option value="anthropic">Anthropic</option>
-          </select>
-          {providerChoice !== 'auto' && (
-            <input
-              type="password"
-              value={providerKey}
-              onChange={(e) => setProviderKey(e.target.value)}
-              placeholder={providerChoice === 'nvidia' ? 'nvapi-...' : 'sk-ant-...'}
-              style={{
-                width: '100%', padding: '6px 8px', borderRadius: 6, background: C.bg,
-                border: `1px solid ${C.border}`, color: C.text1, fontSize: 12,
-                fontFamily: 'JetBrains Mono, monospace', outline: 'none',
-              }}
-            />
-          )}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
-            <button
-              onClick={saveSettings}
-              style={{
-                padding: '5px 12px', borderRadius: 6, background: C.accent, border: 'none',
-                color: C.bg, fontSize: 11, fontWeight: 700, cursor: 'pointer',
-                fontFamily: 'JetBrains Mono, monospace', textTransform: 'uppercase',
-              }}
-            >
-              Save
-            </button>
-          </div>
-          <div style={{ fontSize: 10, color: C.text3, lineHeight: 1.5 }}>
-            Keys are stored in your browser and sent only with your request. Leave 'Auto' to use the server's configured model.
-          </div>
-        </div>
-      )}
 
       {/* Plan view */}
       {plan && plan.length > 0 && (
@@ -1037,17 +1020,27 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
         })}
         {sending && (
           <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderRadius: 12, background: C.card, border: `1px solid ${C.border}`, borderBottomLeftRadius: 4 }}>
-              {[0, 1, 2].map(i => (
-                <span key={i} style={{
-                  width: 6, height: 6, borderRadius: '50%', background: C.accent,
-                  display: 'inline-block', animation: 'typing-bounce 1.2s infinite',
-                  animationDelay: `${i * 0.18}s`,
-                }} />
-              ))}
-              <span style={{ fontSize: 10, color: C.text2, marginLeft: 4, textTransform: 'uppercase', letterSpacing: '0.08em', fontFamily: 'JetBrains Mono, monospace' }}>
-                {currentPhase ?? 'thinking'}
-              </span>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: '85%', width: '100%', padding: '10px 14px', borderRadius: 12, background: C.card, border: `1px solid ${C.border}`, borderBottomLeftRadius: 4 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {[0, 1, 2].map(i => (
+                  <span key={i} style={{
+                    width: 6, height: 6, borderRadius: '50%', background: C.accent,
+                    display: 'inline-block', animation: 'typing-bounce 1.2s infinite',
+                    animationDelay: `${i * 0.18}s`,
+                  }} />
+                ))}
+                <span style={{ fontSize: 10, color: C.text2, marginLeft: 4, textTransform: 'uppercase', letterSpacing: '0.08em', fontFamily: 'JetBrains Mono, monospace' }}>
+                  {phaseLabel(currentPhase)}
+                </span>
+                <span style={{ fontSize: 10, color: C.accent, fontFamily: 'JetBrains Mono, monospace' }}>
+                  {elapsedSecs}s
+                </span>
+              </div>
+              {streamText.trim() && (
+                <div style={{ maxHeight: 160, overflowY: 'auto', fontSize: 10.5, color: C.text3, fontFamily: 'JetBrains Mono, monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.5 }}>
+                  {streamText}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1216,6 +1209,70 @@ function LiveToolOutput({ output }: { output: string }) {
   );
 }
 
+function ToolArgsSummary({ name, args }: { name: string; args: any }) {
+  if (!args || typeof args !== 'object') return null;
+  const style: React.CSSProperties = {
+    fontSize: 11, color: C.text2, fontFamily: 'JetBrains Mono, monospace',
+    whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.5,
+  };
+  switch (name) {
+    case 'run_terminal':
+      return <div style={style}><span style={{ color: C.yellow }}>$</span> {String(args.command ?? '')}</div>;
+    case 'read_file':
+    case 'write_file':
+    case 'delete_file':
+      return <div style={style}><span style={{ color: C.accent }}>FILE</span> {String(args.path ?? '')}</div>;
+    case 'list_files':
+      return <div style={style}><span style={{ color: C.accent }}>DIR</span> {String(args.path ?? '.')}{args.recursive ? ' (recursive)' : ''}</div>;
+    case 'glob':
+      return <div style={style}><span style={{ color: C.accent }}>GLOB</span> {String(args.pattern ?? '')}</div>;
+    case 'grep':
+      return <div style={style}><span style={{ color: C.accent }}>GREP</span> {String(args.pattern ?? '')} {args.path ? `in ${args.path}` : ''}</div>;
+    case 'run_tests':
+      return <div style={style}><span style={{ color: C.accent }}>TEST</span> {String(args.command ?? '')}</div>;
+    default:
+      return <pre style={{ margin: 0, fontSize: 10.5, color: C.text2, overflow: 'auto', fontFamily: 'JetBrains Mono, monospace' }}>{JSON.stringify(args, null, 2)}</pre>;
+  }
+}
+
+function ToolCard({ tool, result }: { tool: { name: string; input?: any }; result?: any }) {
+  const [open, setOpen] = useState(true);
+  const name = tool.name;
+  const err = result?.isError;
+  const resultData = result?.result;
+  const statusLine =
+    resultData === undefined
+      ? null
+      : resultData && typeof resultData === 'object' && 'passed' in resultData
+        ? (resultData.passed ? 'passed' : 'failed')
+        : err
+          ? 'failed'
+          : 'ok';
+
+  return (
+    <div style={{ maxWidth: '100%', borderRadius: 8, border: `1px solid ${C.border}`, background: C.bg, overflow: 'hidden' }}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', cursor: 'pointer', background: C.surface }}
+      >
+        <span style={{ fontSize: 10, color: err ? C.red : C.green, fontFamily: 'JetBrains Mono, monospace' }}>
+          {statusLine ? (statusLine === 'passed' || statusLine === 'ok' ? '✓' : '✗') : '▸'}
+        </span>
+        <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: C.text2, fontFamily: 'JetBrains Mono, monospace', fontWeight: 700 }}>
+          {name}
+        </span>
+        <span style={{ flex: 1 }} />
+        <span style={{ fontSize: 10, color: C.text3 }}>{open ? '−' : '+'}</span>
+      </div>
+      {open && (
+        <div style={{ padding: '6px 10px' }}>
+          <ToolArgsSummary name={name} args={tool.input} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AgentMessageBubble({ message }: { message: AgentMessage }) {
   const isUser = message.role === 'user';
   const content = message.content;
@@ -1228,24 +1285,20 @@ function AgentMessageBubble({ message }: { message: AgentMessage }) {
           background: C.accent, color: C.bg, fontSize: 13, lineHeight: 1.5,
           borderBottomRightRadius: 4,
         }}>
-          {typeof content === 'string' ? content : content?.text ?? JSON.stringify(content)}
+          {typeof content === 'string' ? <PlainText text={content} /> : <PlainText text={content?.text ?? JSON.stringify(content)} />}
         </div>
       </div>
     );
   }
 
-  // Assistant message - could be text, tool_use, tool_result, or edit_proposed
+  // Assistant message - could be text, tool_use (+merged tool_result), tool_result, or edit_proposed
   if (typeof content === 'object' && content !== null) {
     if ('tool_use' in content) {
       const tool = content.tool_use;
+      const result = (content as any).tool_result;
       return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxWidth: '85%' }}>
-          <div style={{ fontSize: 10, color: C.yellow, fontFamily: 'JetBrains Mono, monospace', textTransform: 'uppercase' }}>
-            ▶ Tool: {tool.name}
-          </div>
-          <pre style={{ margin: 0, padding: '8px 10px', borderRadius: 6, background: C.bg, border: `1px solid ${C.border}`, fontSize: 11, color: C.text2, overflow: 'auto', fontFamily: 'JetBrains Mono, monospace' }}>
-            {JSON.stringify(tool.input, null, 2)}
-          </pre>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxWidth: '100%' }}>
+          <ToolCard tool={tool} result={result} />
         </div>
       );
     }
@@ -1257,7 +1310,7 @@ function AgentMessageBubble({ message }: { message: AgentMessage }) {
           <div style={{ fontSize: 10, color: result.isError ? C.red : C.green, fontFamily: 'JetBrains Mono, monospace', textTransform: 'uppercase' }}>
             {result.isError ? '✗' : '✓'} Result
           </div>
-          <pre style={{ margin: 0, padding: '8px 10px', borderRadius: 6, background: C.bg, border: `1px solid ${result.isError ? C.red : C.border}`, fontSize: 11, color: result.isError ? C.red : C.text1, overflow: 'auto', fontFamily: 'JetBrains Mono, monospace' }}>
+          <pre style={{ margin: 0, padding: '8px 10px', borderRadius: 6, background: C.bg, border: `1px solid ${result.isError ? C.red : C.border}`, fontSize: 11, color: result.isError ? C.red : C.text1, overflow: 'auto', fontFamily: 'JetBrains Mono, monospace', whiteSpace: 'pre-wrap' }}>
             {typeof result.result === 'string' ? result.result : JSON.stringify(result.result, null, 2)}
           </pre>
         </div>
@@ -1297,8 +1350,51 @@ function AgentMessageBubble({ message }: { message: AgentMessage }) {
             background: C.card, color: C.text1, fontSize: 13, lineHeight: 1.5,
             borderBottomLeftRadius: 4, border: `1px solid ${C.border}`,
           }}>
-            {content.text}
+            <Markdown text={String(content.text)} />
           </div>
+        </div>
+      );
+    }
+
+    // Persisted validator message (role 'validator') — a pass/fail card.
+    if ('passed' in content && 'output' in content) {
+      const v = content as any;
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxWidth: '85%' }}>
+          <div style={{ fontSize: 10, color: v.passed ? C.green : C.red, fontFamily: 'JetBrains Mono, monospace', textTransform: 'uppercase' }}>
+            {v.passed ? '✓' : '✗'} Validation {v.passed ? 'passed' : 'failed'}{v.command ? ` — ${v.command}` : ''}
+          </div>
+          {typeof v.output === 'string' && v.output.trim() && (
+            <pre style={{ margin: 0, padding: '8px 10px', borderRadius: 6, background: C.bg, border: `1px solid ${v.passed ? C.border : C.red}`, fontSize: 11, color: v.passed ? C.text1 : C.red, overflow: 'auto', fontFamily: 'JetBrains Mono, monospace', whiteSpace: 'pre-wrap' }}>
+              {v.output.length > 4000 ? `${v.output.slice(0, 4000)}\n… (truncated)` : v.output}
+            </pre>
+          )}
+        </div>
+      );
+    }
+
+    // Persisted planner message (role 'planner') — summary + step list.
+    if ('plan' in content) {
+      const p = content as any;
+      const steps = Array.isArray(p.plan?.steps) ? p.plan.steps : [];
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: '85%' }}>
+          {typeof p.text === 'string' && p.text && (
+            <div style={{ padding: '10px 12px', borderRadius: 12, background: C.card, border: `1px solid ${C.border}`, fontSize: 13, lineHeight: 1.5, color: C.text1, borderBottomLeftRadius: 4 }}>
+              <Markdown text={p.text} />
+            </div>
+          )}
+          {steps.length > 0 && (
+            <div style={{ padding: '8px 12px', borderRadius: 8, background: C.surface, border: `1px solid ${C.border}`, fontSize: 11, fontFamily: 'JetBrains Mono, monospace', color: C.text2 }}>
+              <div style={{ fontSize: 9.5, textTransform: 'uppercase', letterSpacing: '0.1em', color: C.accent, marginBottom: 4 }}>Plan</div>
+              {steps.map((s: any, i: number) => (
+                <div key={i} style={{ display: 'flex', gap: 6, padding: '2px 0' }}>
+                  <span style={{ color: C.accent, flexShrink: 0 }}>{i + 1}.</span>
+                  <span>{s.description}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       );
     }
@@ -1311,7 +1407,7 @@ function AgentMessageBubble({ message }: { message: AgentMessage }) {
         background: C.card, color: C.text1, fontSize: 13, lineHeight: 1.5,
         borderBottomLeftRadius: 4, border: `1px solid ${C.border}`,
       }}>
-        {typeof content === 'string' ? content : JSON.stringify(content)}
+        {typeof content === 'string' ? <Markdown text={content} /> : <PlainText text={JSON.stringify(content)} />}
       </div>
     </div>
   );

@@ -1,11 +1,11 @@
-import { Body, Controller, Post } from '@nestjs/common';
-import { AgentService, InvokeRequest } from './agent.service';
+import { Body, Controller, Post } from "@nestjs/common";
+import { AgentService, InvokeRequest } from "./agent.service";
 
-@Controller('agent')
+@Controller("agent")
 export class AgentController {
   constructor(private readonly agentService: AgentService) {}
 
-  @Post('invoke')
+  @Post("invoke")
   async invoke(@Body() request: InvokeRequest) {
     // Fire-and-forget: the pipeline runs in the background and streams progress
     // plus a terminal `agent:done` over the agent socket. The HTTP response is
@@ -15,7 +15,7 @@ export class AgentController {
     return { success: true, async: true };
   }
 
-  @Post('apply')
+  @Post("apply")
   async apply(
     @Body()
     body: {
@@ -34,13 +34,13 @@ export class AgentController {
     return { success: true };
   }
 
-  @Post('stop')
+  @Post("stop")
   async stop(@Body() body: { threadId: string }) {
     const stopped = await this.agentService.cancel(body.threadId);
     return { success: true, stopped };
   }
 
-  @Post('reject')
+  @Post("reject")
   async reject(@Body() body: { threadId: string }) {
     await this.agentService.rejectPending(body.threadId);
     return { success: true };

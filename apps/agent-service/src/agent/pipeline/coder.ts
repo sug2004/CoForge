@@ -1,10 +1,17 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { LlmClient, LlmMessage, LlmOverride } from './client';
-import { AgentCancelledError, AgentContext, CoderOutput, PlanStep, throwIfAborted } from './types';
-import { extractJson } from './json';
-import { AgentEmitter } from './emitter';
-import { AgentTools } from './tools';
-import { describeWorkspace } from './workspace';
+import { Injectable, Logger } from "@nestjs/common";
+import { LlmClient, LlmMessage, LlmOverride } from "./client";
+import {
+  AgentCancelledError,
+  AgentContext,
+  CoderOutput,
+  PlanStep,
+  throwIfAborted,
+} from "./types";
+import { extractJson, extractJsonObjects } from "./json";
+import { AgentEmitter } from "./emitter";
+import { AgentTools } from "./tools";
+import { describeWorkspace } from "./workspace";
+import { discoverProject } from "./discovery";
 
 export interface CoderOptions {
   sessionId: string;
@@ -14,12 +21,17 @@ export interface CoderOptions {
   failureFeedback?: string;
   override?: LlmOverride;
   signal?: AbortSignal;
+  onChunk?: (chunk: string) => void;
 }
 
-const MAX_TOOL_ITERATIONS = 25;
-const MAX_CONTEXT_MESSAGES = 40;
-const STEP_CONTENT_CAP = 8_000;
-const TOOL_RESULT_CAP = 6_000;
+const MAX_TOOL_ITERATIONS = 24;
+const MAX_CONTEXT_MESSAGES = 30;
+// Total character budget for the messages array sent to the model. Keeps the
+// request bounded so it stays comfortably under the provider's token budget;
+// older turns (and oversized tool results) are trimmed to fit.
+const MAX_CONTEXT_CHARS = 16_000;
+const STEP_CONTENT_CAP = 4_000;
+const TOOL_RESULT_CAP = 2_500;
 
 const TOOL_DOC = `You have these tools:
 - run_terminal {"command": "...", "timeoutMs": 60000, "cwd": "app"}
@@ -34,7 +46,10 @@ const TOOL_DOC = `You have these tools:
     The terminal starts in /workspace; your project may be in a subdirectory
     (e.g. /workspace/app). Run "ls" / list_files first to find where
     package.json lives, and use "cwd" (or cd) before running npm/pnpm/yarn
-    commands.
+    commands. Dependencies are NOT pre-installed: if the project has a
+    package.json, run "npm install" (or the project's package manager) in the
+    project directory before running any build/test/dev command, or you will
+    see "X: not found".
 - read_file {"path": "src/foo.ts"}
     Print a file's current contents (capped). Reflects every edit you have made.
 - list_files {"path": "src", "recursive": true}
@@ -74,26 +89,29 @@ export class Coder {
     opts: CoderOptions,
   ): Promise<CoderOutput> {
     const { sandboxId, failureFeedback, override } = opts;
+    const discovery = discoverProject(context.files);
 
     // Files the coder may touch = step files + already-staged files; resolve
     // against current content so the model sees up-to-date source.
     const relevantPaths = new Set([
       ...step.files,
       ...Object.keys(staged),
-      context.focus.focusFileId ?? '',
+      context.focus.focusFileId ?? "",
     ]);
-    relevantPaths.delete('');
+    relevantPaths.delete("");
 
     const currentContent: Record<string, string> = {};
     for (const p of relevantPaths) {
-      const base = context.files[p] ?? '';
+      const base = context.files[p] ?? "";
       const stagedContent = staged[p];
       currentContent[p] = stagedContent ?? base;
     }
 
     const contentBlocks = Object.entries(currentContent)
-      .map(([p, c]) => `### ${p}\n\`\`\`\n${c.slice(0, STEP_CONTENT_CAP)}\n\`\`\``)
-      .join('\n\n');
+      .map(
+        ([p, c]) => `### ${p}\n\`\`\`\n${c.slice(0, STEP_CONTENT_CAP)}\n\`\`\``,
+      )
+      .join("\n\n");
 
     // Seed the sandbox with the known workspace so the agent's terminal, grep
     // and file tools operate on the real code. Best effort — if the push fails
@@ -101,7 +119,9 @@ export class Coder {
     await this.tools
       .ensureWorkspace(sandboxId, { ...context.files, ...staged })
       .catch((e) =>
-        this.logger.warn(`workspace seed failed for sandbox ${sandboxId}: ${(e as Error).message}`),
+        this.logger.warn(
+          `workspace seed failed for sandbox ${sandboxId}: ${(e as Error).message}`,
+        ),
       );
 
     const system = `You are the coding phase of a code agent. You implement ONE step of an approved plan by exploring the project with terminal commands and editing files. You work directly on the project's real files: write_file/delete_file changes are staged immediately, and every read_file/list_files/grep/run_terminal reflects the latest state.
@@ -109,23 +129,24 @@ export class Coder {
 ${TOOL_DOC}
 
 Approach:
+0. EXPLORE FIRST, act second. Before touching any file, run list_files (recursive) on the project root and read the key config/manifest files (package.json, tsconfig, etc.) so you know the real structure, framework and routing conventions. Never guess a file path — verify it exists first (e.g. read_file the target, or list_files the containing directory).
 1. Read the relevant files first (read_file or grep) to understand the current code before editing.
-2. Use run_terminal to discover and run the project's build/test command; iterate until it passes.
+2. If the project has a package.json, install dependencies first (npm/pnpm/yarn install in the project dir — the sandbox has none, and it has no package manager preference; use the lockfile's manager if present). Then use run_terminal to discover and run the project's build/test command; iterate until it passes.
 3. Write each changed file in full with write_file, or list them in the final "files" object.
 
 Project memory:
-${context.projectMemory || '(none yet)'}
+${context.projectMemory || "(none yet)"}
 
 User preferences:
-${context.userPreferences || '(none)'}
+${context.userPreferences || "(none)"}
 
 Project instructions (AGENTS.md / CLAUDE.md / editor rules — follow these):
-${context.instructions || '(none)'}
+${context.instructions || "(none)"}
 
 Project summary:
-${context.projectSummary || '(none)'}
+${context.projectSummary || "(none)"}
 
-The project's test/build command is: ${context.testCommand || 'none detected — run_terminal to discover it'}
+${discovery ? `${discovery}\n` : ""}The project's test/build command is: ${context.testCommand || "none detected — run_terminal to discover it"}
 
 Rules:
 - Respond with ONLY one JSON object per turn: a tool call {"tool":{"name":"...","args":{...}}}, or the done object.
@@ -134,44 +155,49 @@ Rules:
 - After changing files, run the project's verification (lint / typecheck) if present, then the test/build command, and iterate until they pass.
 - Prefer small, targeted edits.
 - Empty directories cannot be tracked — to "create a folder", write a placeholder file inside it (e.g. a .gitkeep file). Never rely on mkdir alone; the new folder only becomes part of the change via a file inside it.
-- If list_files shows the workspace is empty (no package.json, no source files), you have no project files to run or edit. Stop and say so in the done object instead of running commands against an empty workspace.`;
+- If list_files shows the workspace is empty (no package.json, no source files), you have no project files to run or edit. Stop and say so in the done object instead of running commands against an empty workspace.
+- If you determine this step needs no file changes (the answer is a command, a one-off terminal action, or an explanation), do NOT run the terminal and do NOT edit files. Respond with the done object: {"done": true, "explanation": "<the complete, direct answer for the user>", "files": {}}. The explanation is shown to the user verbatim — make it the full answer, not a summary of what you did.`;
 
     const stepInstruction = `${describeWorkspace(context.files)}
 
 Step to implement:
 ${step.description}
 
-Files listed by the step: ${step.files.join(', ') || '(none)'}
+Files listed by the step: ${step.files.join(", ") || "(none)"}
 
 Current contents of the relevant files:
-${contentBlocks || '(no relevant files yet — create new files as needed)'}
-${failureFeedback ? `\nThe previous attempt failed validation. Here is the failure output — fix the cause before finishing:\n${failureFeedback}` : ''}
+${contentBlocks || "(no relevant files yet — create new files as needed)"}
+${failureFeedback ? `\nThe previous attempt failed validation. Here is the failure output — fix the cause before finishing:\n${failureFeedback}` : ""}
 
 Proceed. Respond with a tool call or the done object.`;
 
     const messages: LlmMessage[] = [
       ...context.workingMemory.slice(-6).map((m) => ({
-        role: m.role === 'user' ? ('user' as const) : ('assistant' as const),
+        role: m.role === "user" ? ("user" as const) : ("assistant" as const),
         content: m.text,
       })),
-      { role: 'user', content: stepInstruction },
+      { role: "user", content: stepInstruction },
     ];
 
     let currentStaged = { ...staged };
-    let parsed: any;
 
     for (let iter = 1; iter <= MAX_TOOL_ITERATIONS; iter++) {
       throwIfAborted(opts.signal);
       let text: string;
       try {
         const { text: t } = await this.llm.complete({
-          model: 'coder',
+          model: "coder",
           system,
           messages,
+          // GLM-5.2 is a reasoning model: it spends tokens thinking before
+          // emitting the small JSON tool-call object, so give it enough headroom
+          // to finish the answer instead of truncating mid-JSON (which the
+          // extractor then repairs on retry).
           maxTokens: 4096,
           temperature: 0.2,
           override,
           signal: opts.signal,
+          onChunk: opts.onChunk,
         });
         text = t;
         throwIfAborted(opts.signal);
@@ -183,130 +209,299 @@ Proceed. Respond with a tool call or the done object.`;
         }
         // Hard failure on the first call aborts the step; later failures fall
         // back to what was staged so far rather than losing the work.
-        if (iter === 1) throw new Error(`Coder failed: ${(e as Error).message}`);
+        if (iter === 1)
+          throw new Error(`Coder failed: ${(e as Error).message}`);
         return {
           files: currentStaged,
           explanation: `Tool loop ended early (${(e as Error).message})`,
         };
       }
 
+      let objects: any[];
       try {
-        parsed = extractJson(text);
+        objects = extractJsonObjects(text);
       } catch {
-        messages.push({ role: 'assistant', content: text });
+        objects = [];
+      }
+      if (objects.length === 0) {
+        try {
+          objects = [extractJson(text)];
+        } catch {
+          objects = [];
+        }
+      }
+
+      if (objects.length === 0) {
+        messages.push({ role: "assistant", content: text });
         messages.push({
-          role: 'user',
+          role: "user",
           content:
-            'Your reply did not contain a valid JSON object. Respond with exactly one JSON object: a tool call or the done object.',
+            "Your reply did not contain a valid JSON object. Respond with exactly one JSON object: a tool call or the done object.",
         });
         continue;
       }
 
-      // Done — the model reports the step complete with its file changes.
-      if (parsed.done === true || parsed.files) {
-        const files =
-          parsed.files && typeof parsed.files === 'object' && !Array.isArray(parsed.files)
-            ? parsed.files
-            : {};
-        const merged = { ...currentStaged, ...files };
-        if (Object.keys(files).length > 0) {
-          await this.tools
-            .ensureWorkspace(sandboxId, files)
-            .catch((e) => this.logger.warn(`final file push failed: ${(e as Error).message}`));
+      // The model may emit several tool calls (or a tool call plus the done
+      // object) in one reply — execute each in order so none are dropped.
+      // The full raw reply is pushed once as the assistant turn, then each
+      // executed tool gets its own follow-up user turn with that tool's result.
+      messages.push({ role: "assistant", content: text });
+      let toolIndex = 0;
+      for (const parsed of objects) {
+        // Done — the model reports the step complete with its file changes.
+        // Only treat it as done when `done` is true, or when the reply is a
+        // bare non-empty `files` map. A tool call that also carries a `files`
+        // key must run the tool, not end the step.
+        const hasFiles =
+          parsed &&
+          parsed.files &&
+          typeof parsed.files === "object" &&
+          !Array.isArray(parsed.files) &&
+          Object.keys(parsed.files).length > 0;
+        if (parsed && (parsed.done === true || (hasFiles && !parsed.tool))) {
+          const files =
+            parsed.files &&
+            typeof parsed.files === "object" &&
+            !Array.isArray(parsed.files)
+              ? parsed.files
+              : {};
+          const merged = { ...currentStaged, ...files };
+          if (Object.keys(files).length > 0) {
+            await this.tools
+              .ensureWorkspace(sandboxId, files)
+              .catch((e) =>
+                this.logger.warn(
+                  `final file push failed: ${(e as Error).message}`,
+                ),
+              );
+          }
+          return {
+            files: merged,
+            explanation: parsed.explanation || step.description,
+          };
         }
-        return {
-          files: merged,
-          explanation: parsed.explanation || step.description,
-        };
-      }
 
-      // Tool call — execute, stream the result to the UI, feed it back.
-      const tool = parsed.tool;
-      if (tool && typeof tool.name === 'string') {
-        const name = tool.name;
-        const args =
-          tool.args && typeof tool.args === 'object' && !Array.isArray(tool.args)
-            ? tool.args
-            : {};
+        // Tool call — execute, stream the result to the UI, feed it back.
+        if (parsed && parsed.tool && typeof parsed.tool.name === "string") {
+          toolIndex++;
+          const name = parsed.tool.name;
+          const args =
+            parsed.tool.args &&
+            typeof parsed.tool.args === "object" &&
+            !Array.isArray(parsed.tool.args)
+              ? parsed.tool.args
+              : {};
 
-        const toolCallId = `coder-${Date.now()}-${iter}`;
-        await this.emitter
-          .user(opts.sessionId, opts.userId, opts.threadId, 'agent:tool_started', {
-            toolCallId,
-            toolName: name,
-            args,
-          })
-          .catch(() => {});
-
-        // Stream the command's output to the UI as `agent:tool_chunk` events.
-        // Chunks are coalesced every ~120ms (or 8KB) so a chatty command like
-        // `npm install` doesn't spam the socket one tiny write at a time.
-        let chunkBuffer = '';
-        let chunkTimer: NodeJS.Timeout | null = null;
-        const flushChunks = () => {
-          chunkTimer = null;
-          if (!chunkBuffer) return;
-          const payload = chunkBuffer;
-          chunkBuffer = '';
-          void this.emitter
-            .user(opts.sessionId, opts.userId, opts.threadId, 'agent:tool_chunk', {
-              toolCallId,
-              chunk: payload,
-            })
+          const toolCallId = `coder-${Date.now()}-${iter}-${toolIndex}`;
+          await this.emitter
+            .user(
+              opts.sessionId,
+              opts.userId,
+              opts.threadId,
+              "agent:tool_started",
+              {
+                toolCallId,
+                toolName: name,
+                args,
+              },
+            )
             .catch(() => {});
-        };
-        const relayChunk = (chunk: string) => {
-          chunkBuffer += chunk;
-          if (chunkBuffer.length >= 8_000) flushChunks();
-          else if (!chunkTimer) chunkTimer = setTimeout(flushChunks, 120);
-        };
 
-        const result = await this.tools.run(
-          sandboxId,
-          name,
-          args,
-          currentStaged,
-          (chunk) => relayChunk(chunk),
-          opts.signal,
-        );
-        flushChunks();
-        throwIfAborted(opts.signal);
-        if (result.staged) currentStaged = result.staged;
+          // Stream the command's output to the UI as `agent:tool_chunk` events.
+          // Chunks are coalesced every ~120ms (or 8KB) so a chatty command like
+          // `npm install` doesn't spam the socket one tiny write at a time.
+          let chunkBuffer = "";
+          let chunkTimer: NodeJS.Timeout | null = null;
+          const flushChunks = () => {
+            chunkTimer = null;
+            if (!chunkBuffer) return;
+            const payload = chunkBuffer;
+            chunkBuffer = "";
+            void this.emitter
+              .user(
+                opts.sessionId,
+                opts.userId,
+                opts.threadId,
+                "agent:tool_chunk",
+                {
+                  toolCallId,
+                  chunk: payload,
+                },
+              )
+              .catch(() => {});
+          };
+          const relayChunk = (chunk: string) => {
+            chunkBuffer += chunk;
+            if (chunkBuffer.length >= 8_000) flushChunks();
+            else if (!chunkTimer) chunkTimer = setTimeout(flushChunks, 120);
+          };
 
-        await this.emitter
-          .user(opts.sessionId, opts.userId, opts.threadId, 'agent:tool_result', {
-            toolCallId,
-            result: { output: result.output, exitCode: result.exitCode },
-            isError: result.isError,
-          })
-          .catch(() => {});
+          const result = await this.tools.run(
+            sandboxId,
+            name,
+            args,
+            currentStaged,
+            (chunk) => relayChunk(chunk),
+            opts.signal,
+          );
+          flushChunks();
+          throwIfAborted(opts.signal);
+          if (result.staged) currentStaged = result.staged;
 
-        messages.push({ role: 'assistant', content: text });
-        messages.push({
-          role: 'user',
-          content:
-            `Tool "${name}" ${result.isError ? 'FAILED' : 'succeeded'}` +
-            `${result.exitCode !== undefined && result.exitCode !== null ? ` (exit ${result.exitCode})` : ''}:\n` +
-            result.output.slice(0, TOOL_RESULT_CAP) +
-            `\n\nFiles staged so far: ${Object.keys(currentStaged).join(', ') || 'none'}`,
-        });
-        // Bound context growth: drop the oldest turns once we exceed the cap.
-        if (messages.length > MAX_CONTEXT_MESSAGES) {
-          messages.splice(messages.length - MAX_CONTEXT_MESSAGES);
+          await this.emitter
+            .user(
+              opts.sessionId,
+              opts.userId,
+              opts.threadId,
+              "agent:tool_result",
+              {
+                toolCallId,
+                result: { output: result.output, exitCode: result.exitCode },
+                isError: result.isError,
+              },
+            )
+            .catch(() => {});
+
+          messages.push({
+            role: "user",
+            content:
+              `Tool "${name}" ${result.isError ? "FAILED" : "succeeded"}` +
+              `${result.exitCode !== undefined && result.exitCode !== null ? ` (exit ${result.exitCode})` : ""}:\n` +
+              result.output.slice(0, TOOL_RESULT_CAP) +
+              `\n\nFiles staged so far: ${Object.keys(currentStaged).join(", ") || "none"}`,
+          });
+          // Bound context growth: drop the oldest turns once we exceed the cap.
+          if (messages.length > MAX_CONTEXT_MESSAGES) {
+            messages.splice(messages.length - MAX_CONTEXT_MESSAGES);
+          }
+          trimContext(messages);
+          continue;
         }
-        continue;
-      }
 
-      messages.push({ role: 'assistant', content: text });
-      messages.push({
-        role: 'user',
-        content:
-          'Unrecognized JSON. Respond with either {"tool":{"name":"...","args":{...}}} or {"done":true,"explanation":"...","files":{...}}.',
-      });
+        // Recognized JSON but not a tool call or done object — ignore it within
+        // a multi-object reply rather than erroring the whole iteration.
+        messages.push({
+          role: "user",
+          content:
+            'Unrecognized JSON. Respond with either {"tool":{"name":"...","args":{...}}} or {"done":true,"explanation":"...","files":{...}}.',
+        });
+      }
     }
 
-    throw new Error(
-      `Step could not be completed after ${MAX_TOOL_ITERATIONS} tool iterations`,
-    );
+    // The tool budget ran out, but the model may have already done all the real
+    // work — scaffolding, installs and builds legitimately need many tool calls,
+    // so a hard failure here would just discard a finished step. Give it a
+    // couple of final chances to emit the done object (no more tools), then fall
+    // back to finishing with whatever is staged. The validator is the real gate
+    // for whether the work is good.
+    const wrapPrompt =
+      "Tool-call limit reached. Finalize now: respond with ONLY the done object " +
+      '{"done": true, "explanation": "what was done", "files": {}} (no tool calls). ' +
+      'If you created or changed files via the terminal, include the important ones (package.json, configs, source) in "files" so they can be saved.';
+    for (let wrap = 0; wrap < 2; wrap++) {
+      throwIfAborted(opts.signal);
+      try {
+        messages.push({ role: "user", content: wrapPrompt });
+        const { text: t } = await this.llm.complete({
+          model: "coder",
+          system,
+          messages,
+          maxTokens: 4096,
+          temperature: 0.2,
+          override,
+          signal: opts.signal,
+          onChunk: opts.onChunk,
+        });
+        messages.push({ role: "assistant", content: t });
+        let objects: any[];
+        try {
+          objects = extractJsonObjects(t);
+        } catch {
+          objects = [];
+        }
+        if (objects.length === 0) {
+          try {
+            objects = [extractJson(t)];
+          } catch {
+            objects = [];
+          }
+        }
+        for (const parsed of objects) {
+          const files =
+            parsed &&
+            parsed.files &&
+            typeof parsed.files === "object" &&
+            !Array.isArray(parsed.files)
+              ? parsed.files
+              : {};
+          if (parsed?.done === true) {
+            const merged = { ...currentStaged, ...files };
+            if (Object.keys(files).length > 0) {
+              await this.tools
+                .ensureWorkspace(sandboxId, files)
+                .catch((e) =>
+                  this.logger.warn(
+                    `final file push failed: ${(e as Error).message}`,
+                  ),
+                );
+            }
+            return {
+              files: merged,
+              explanation: parsed.explanation || step.description,
+            };
+          }
+        }
+      } catch (e) {
+        if (e instanceof AgentCancelledError || opts.signal?.aborted) {
+          throw new AgentCancelledError();
+        }
+        break;
+      }
+    }
+
+    return {
+      files: currentStaged,
+      explanation: `Finished after ${MAX_TOOL_ITERATIONS} tool iterations (no explicit done object).`,
+    };
+  }
+}
+
+// Keep the whole messages array under MAX_CONTEXT_CHARS so the coder request
+// stays within the provider's token budget. Drops the oldest turns first, then
+// truncates the longest tool-result payloads.
+function trimContext(messages: LlmMessage[]): void {
+  let total = messages.reduce((sum, m) => sum + m.content.length, 0);
+  if (total <= MAX_CONTEXT_CHARS) return;
+
+  // 1) Drop oldest messages (but never the opening step instruction) until we
+  //    fit, always keeping the latest turn.
+  while (messages.length > 1 && total > MAX_CONTEXT_CHARS) {
+    const removed = messages[1];
+    messages.splice(1, 1);
+    total -= removed?.content.length ?? 0;
+  }
+
+  // 2) If still over budget, shorten the largest tool-result payloads.
+  if (total > MAX_CONTEXT_CHARS) {
+    const trimFloor = 400;
+    for (const m of [...messages].reverse()) {
+      if (total <= MAX_CONTEXT_CHARS) break;
+      const content = m.content;
+      // Only truncate the synthetic tool-result turns, never the raw model
+      // output (which may still contain the JSON object we need to parse).
+      if (
+        !content.startsWith('Tool "') &&
+        !content.startsWith("Your reply did")
+      ) {
+        continue;
+      }
+      if (content.length <= trimFloor) continue;
+      const kept = Math.max(
+        trimFloor,
+        content.length - (total - MAX_CONTEXT_CHARS),
+      );
+      m.content = `${content.slice(0, kept)}\n… (result truncated)`;
+      total = total - content.length + m.content.length;
+    }
   }
 }

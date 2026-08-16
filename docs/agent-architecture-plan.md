@@ -228,7 +228,7 @@ Phase transitions drive `agent:phase_started` events.
 
 ### 5.5 Cancellation / lifecycle
 - `POST /agent/stop` aborts the thread's in-flight run. An `AbortSignal` is threaded through
-  the LLM client (Anthropic + NVIDIA), the sandbox client, the tools, and every phase; a
+  the LLM client (GLM-5.2 on NVIDIA NIM), the sandbox client, the tools, and every phase; a
   `throwIfAborted()` guard runs at each step boundary.
 - Aborted runs emit `agent:message` ("Run cancelled.") and `agent:done` with `cancelled: true`.
 - `POST /agent/reject` clears the server-side pending entry so a stale plan can't be applied
@@ -243,10 +243,11 @@ Phase transitions drive `agent:phase_started` events.
 `sandbox-runner` keys containers by arbitrary `[a-zA-Z0-9_-]+` ids, so the naming convention
 is purely a call-site choice:
 
-- **Live/manual execution** (someone hits Run): `${sessionId}` — unchanged, one shared
+- **Live/manual execution** (someone hits Run): `${sessionId}` — one shared
   container per session.
-- **Agent terminal + validation runs**: `${sessionId}-${userId}-agent`
-  (`validator.sandboxKey()`), shared by the whole pipeline for that thread.
+- **Agent terminal + validation runs**: `${sessionId}` (`validator.sandboxKey()`)
+  — the agent runs in the SAME container as the user's UI terminal, so
+  scaffolding, installs, and created files appear live in the user's terminal.
 - Files pushed to this container are a **snapshot of the shared `Y.Doc` with the staged diff
   applied on top** — never the live workspace.
 - `POST /sandbox/:id/exec` streams NDJSON (`stdout`/`stderr`/`exit`); there is a

@@ -1,15 +1,16 @@
-import { Injectable } from '@nestjs/common';
-import { AgentEmitter } from './emitter';
-import { PendingApply, Risk } from './types';
+import { Injectable } from "@nestjs/common";
+import { AgentEmitter } from "./emitter";
+import { PendingApply, Risk } from "./types";
 
 // Cheap line-based hint diff for the review UI — not a replacement for a real
 // diff viewer, just enough to preview what changed at a glance.
 export function hintDiff(oldText: string, newText: string): string {
-  if (oldText === newText) return '';
-  const a = oldText.split('\n');
-  const b = newText.split('\n');
+  if (oldText === newText) return "";
+  const a = oldText.split("\n");
+  const b = newText.split("\n");
   let prefix = 0;
-  while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) prefix++;
+  while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix])
+    prefix++;
   let suffix = 0;
   while (
     suffix < a.length - prefix &&
@@ -21,7 +22,7 @@ export function hintDiff(oldText: string, newText: string): string {
   const out: string[] = [];
   for (let i = prefix; i < a.length - suffix; i++) out.push(`- ${a[i]}`);
   for (let i = prefix; i < b.length - suffix; i++) out.push(`+ ${b[i]}`);
-  return out.join('\n');
+  return out.join("\n");
 }
 
 @Injectable()
@@ -45,7 +46,7 @@ export class Applier {
       // Don't silently clobber it — tell the user the old one is being dropped
       // so the review UI and the server-side pending stay in sync.
       await this.emitter
-        .user(sessionId, userId, threadId, 'agent:message', {
+        .user(sessionId, userId, threadId, "agent:message", {
           text: `A newer run produced fresh changes, so the earlier proposal for this thread was superseded and will not be applied.`,
         })
         .catch(() => {});
@@ -63,14 +64,20 @@ export class Applier {
     this.pending.set(threadId, entry);
 
     for (const [fileId, newContent] of Object.entries(files)) {
-      const oldContent = baseFiles[fileId] ?? '';
-      await this.emitter.user(sessionId, userId, threadId, 'agent:edit_proposed', {
-        fileId,
-        diff: hintDiff(oldContent, newContent),
-        oldContent,
-        newContent,
-        toolCallId,
-      });
+      const oldContent = baseFiles[fileId] ?? "";
+      await this.emitter.user(
+        sessionId,
+        userId,
+        threadId,
+        "agent:edit_proposed",
+        {
+          fileId,
+          diff: hintDiff(oldContent, newContent),
+          oldContent,
+          newContent,
+          toolCallId,
+        },
+      );
     }
     return entry;
   }

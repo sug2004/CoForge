@@ -54,8 +54,8 @@ export class SandboxController {
     return { ok: true };
   }
 
-  // Warm + provision the container (keeps it alive during long agent runs so
-  // the idle reaper / capacity eviction can't destroy it mid-flight).
+  // Warm + provision the container (containers are never auto-removed, so this
+  // just ensures provisioning is done before a command runs).
   @Post(':sessionId/touch')
   async touch(@Param('sessionId') sessionId: string) {
     await this.sandbox.touch(sessionId);

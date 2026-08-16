@@ -7,19 +7,6 @@ interface JwtPayload {
   sub?: string;
 }
 
-interface AgentInvokePayload {
-  threadId: string;
-  prompt: string;
-}
-
-interface AgentContextUpdatePayload {
-  threadId: string;
-  focusFileId?: string;
-  cursor?: { line: number; col: number };
-  selection?: { startLine: number; startCol: number; endLine: number; endCol: number };
-  openFileIds: string[];
-}
-
 @Injectable()
 export class AgentGateway implements OnModuleInit {
   private server: Server;
@@ -33,7 +20,9 @@ export class AgentGateway implements OnModuleInit {
       return;
     }
 
-    this.server.of('/agent').on('connection', (client: Socket) => this.handleConnection(client));
+    this.server
+      .of('/agent')
+      .on('connection', (client: Socket) => this.handleConnection(client));
   }
 
   private handleConnection(client: Socket) {
@@ -75,10 +64,6 @@ export class AgentGateway implements OnModuleInit {
     // Store user info on socket for later use
     (client as any).userId = payload.userId ?? payload.sub;
     (client as any).sessionId = sessionId;
-
-    // Handle incoming messages
-    client.on('agent:invoke', (payload: AgentInvokePayload) => this.handleInvoke(client, payload));
-    client.on('agent:context_update', (payload: AgentContextUpdatePayload) => this.handleContextUpdate(client, payload));
   }
 
   private handleDisconnect(client: Socket) {
@@ -91,66 +76,8 @@ export class AgentGateway implements OnModuleInit {
     }
   }
 
-  private handleInvoke(client: Socket, payload: AgentInvokePayload) {
-    // Acknowledge - the actual invocation will be done via REST API from the client
-    client.emit('agent:invoke:ack', { threadId: payload.threadId });
-  }
-
-  private handleContextUpdate(client: Socket, payload: AgentContextUpdatePayload) {
-    // Acknowledge receipt
-    client.emit('agent:context_update:ack', { threadId: payload.threadId });
-  }
-
-  // Server-to-client event emitters (called from agent-service via HTTP or message queue)
-  emitPhaseStarted(threadId: string, sessionId: string, userId: string, phase: string) {
-    this.server?.of('/agent').to(`session:${sessionId}:user:${userId}`).emit('agent:phase_started', {
-      threadId,
-      phase,
-    });
-  }
-
-  emitToolStarted(threadId: string, sessionId: string, userId: string, toolCallId: string, toolName: string, args: any) {
-    this.server?.of('/agent').to(`session:${sessionId}:user:${userId}`).emit('agent:tool_started', {
-      threadId,
-      toolCallId,
-      toolName,
-      args,
-    });
-  }
-
-  emitToolResult(threadId: string, sessionId: string, userId: string, toolCallId: string, result: any, isError: boolean) {
-    this.server?.of('/agent').to(`session:${sessionId}:user:${userId}`).emit('agent:tool_result', {
-      threadId,
-      toolCallId,
-      result,
-      isError,
-    });
-  }
-
-  emitMessage(threadId: string, sessionId: string, userId: string, text: string) {
-    this.server?.of('/agent').to(`session:${sessionId}:user:${userId}`).emit('agent:message', {
-      threadId,
-      text,
-    });
-  }
-
-  emitEditProposed(threadId: string, sessionId: string, userId: string, fileId: string, diff: string, toolCallId: string) {
-    this.server?.of('/agent').to(`session:${sessionId}:user:${userId}`).emit('agent:edit_proposed', {
-      threadId,
-      fileId,
-      diff,
-      toolCallId,
-    });
-  }
-
-  emitPlan(threadId: string, sessionId: string, userId: string, steps: Array<{ description: string; files: string[] }>) {
-    this.server?.of('/agent').to(`session:${sessionId}:user:${userId}`).emit('agent:plan', {
-      threadId,
-      steps,
-    });
-  }
-
-  // Generic dispatcher used by the HTTP emit endpoint. Per-user events go to
+  // Server-to-client event dispatcher used by the HTTP emit endpoint
+  // (agent-service streams all agent events through it). Per-user events go to
   // the requester's private room; broadcast events go to the whole session.
   emit(
     event: string,
@@ -171,23 +98,5 @@ export class AgentGateway implements OnModuleInit {
       ?.of('/agent')
       .to(`session:${sessionId}:user:${userId}`)
       .emit(event, { threadId, ...data });
-  }
-
-  // Broadcast events (to all users in session)
-  emitEditApplied(threadId: string, sessionId: string, userId: string, fileId: string, toolCallId: string) {
-    this.server?.of('/agent').to(`session:${sessionId}`).emit('agent:edit_applied', {
-      threadId,
-      userId,
-      fileId,
-      toolCallId,
-    });
-  }
-
-  emitSessionActivity(sessionId: string, type: string, actorId: string, summary: string) {
-    this.server?.of('/agent').to(`session:${sessionId}`).emit('session:activity', {
-      type,
-      actorId,
-      summary,
-    });
   }
 }
