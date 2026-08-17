@@ -3,15 +3,15 @@
 import { useMemo, useState, type ReactNode } from 'react';
 
 const C = {
-  bg: '#0a0c10',
-  surface: '#0d1017',
-  border: '#1e2535',
-  text1: '#e8f0e0',
-  text2: '#7a9070',
-  text3: '#3d5040',
-  accent: '#3ef07f',
-  codeBg: '#0f141b',
-  codeBorder: '#1c2434',
+  bg: 'var(--bg-base)',
+  surface: 'var(--bg-surface)',
+  border: 'var(--border)',
+  text2: 'var(--text-2)',
+  text3: 'var(--text-3)',
+  accent: 'var(--accent)',
+  codeBg: 'var(--bg-card)',
+  codeBorder: 'var(--border)',
+  color: 'var(--accent-2)',
 };
 
 // Minimal, dependency-free markdown renderer for agent chat messages — the
@@ -144,7 +144,7 @@ const codeStyle: React.CSSProperties = {
   padding: '1px 4px',
   fontSize: '0.92em',
   fontFamily: 'JetBrains Mono, monospace',
-  color: '#c8f7d6',
+  color: C.color,
 };
 
 function Paragraph({ children }: { children: ReactNode }) {
@@ -285,7 +285,7 @@ function renderMarkdown(md: string): ReactNode {
 export function Markdown({ text }: { text: string }) {
   const html = useMemo(() => renderMarkdown(text), [text]);
   return (
-    <div style={{ fontSize: 12.5, color: C.text1, wordBreak: 'break-word' }}>
+    <div style={{ fontSize: 12.5, color: C.textBody, wordBreak: 'break-word' }}>
       {html}
     </div>
   );
@@ -294,7 +294,7 @@ export function Markdown({ text }: { text: string }) {
 // For plain (non-markdown) user text.
 export function PlainText({ text }: { text: string }) {
   return (
-    <div style={{ fontSize: 12.5, color: C.text1, whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.55 }}>
+    <div style={{ fontSize: 12.5, color: C.textBody, whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.55 }}>
       {text}
     </div>
   );

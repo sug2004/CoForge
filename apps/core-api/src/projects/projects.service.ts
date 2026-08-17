@@ -19,6 +19,14 @@ async function destroySandbox(sessionId: string) {
 export class ProjectsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  async findAllForUser(userId: string) {
+    return this.prisma.project.findMany({
+      where: { workspace: { members: { some: { userId } } } },
+      include: { workspace: { select: { id: true, name: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
   async create(
     userId: string,
     workspaceId: string,

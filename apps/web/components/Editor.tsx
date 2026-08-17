@@ -22,22 +22,22 @@ if (typeof window !== 'undefined') {
 }
 
 const T = {
-  bg:      '#0a0c10',
-  surface: '#0d1017',
-  card:    '#111520',
-  hover:   '#161b28',
-  border:  '#1e2535',
-  text1:   '#e8f0e0',
-  text2:   '#7a9070',
-  text3:   '#3d5040',
-  accent:  '#3ef07f',
-  green:   '#3ef07f',
-  red:     '#f05a3e',
+  bg:      'var(--bg-base)',
+  surface: 'var(--bg-surface)',
+  card:    'var(--bg-card)',
+  hover:   'var(--bg-hover)',
+  border:  'var(--border)',
+  text1:   'var(--text-1)',
+  text2:   'var(--text-2)',
+  text3:   'var(--text-3)',
+  accent:  'var(--accent)',
+  green:   'var(--green)',
+  red:     'var(--red)',
 };
 
 const PEER_COLORS = [
-  '#3ef07f', '#f0d03e', '#f05a3e', '#3eb8f0', '#9d7ff0',
-  '#f07f3e', '#3ef0d0', '#f03eb8',
+  '#e2652f', '#5b9bd1', '#7fb787', '#d9b54c', '#b18ad1', '#f08a54',
+  '#d1454a', '#4ecdc4',
 ];
 
 const EXT_LANG: Record<string, string> = {
@@ -303,7 +303,7 @@ function TreeNodes({ nodes, active, currentDir, onSelect, onSelectFolder, onRena
                   onClick={e => { e.stopPropagation(); onDelete(node.path); }}
                   title="Delete"
                   style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '1px 3px', borderRadius: 4, color: T.text2, fontSize: 11, lineHeight: 1 }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#2a1010'; (e.currentTarget as HTMLElement).style.color = T.red; }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(248,113,113,0.12)'; (e.currentTarget as HTMLElement).style.color = T.red; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'none'; (e.currentTarget as HTMLElement).style.color = T.text2; }}
                 >🗑</button>
               </div>
@@ -410,7 +410,7 @@ function FileTree({ paths, active, currentDir, onSelect, onSelectFolder, onNewFi
         onMouseDown={onMouseDown}
         style={{ position: 'absolute', top: 0, right: 0, width: 4, height: '100%', cursor: 'col-resize', zIndex: 10,
           background: 'transparent', transition: 'background 0.15s' }}
-        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = T.accent + '44'; }}
+        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--accent-soft)'; }}
         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
       />
     </div>
@@ -470,7 +470,7 @@ function Navbar({ sessionId, activeFile, cloning, onClone, peers, dbParticipants
               </div>
             ))}
           </div>
-          <span className="text-[10px] px-1.5 py-0.5 rounded font-mono font-semibold" style={{ background: T.accent + '22', color: T.accent, border: `1px solid ${T.accent}44` }}>
+          <span className="text-[10px] px-1.5 py-0.5 rounded font-mono font-semibold" style={{ background: 'var(--accent-soft)', color: T.accent, border: '1px solid var(--accent-soft)' }}>
             {totalOnline} online
           </span>
         </button>

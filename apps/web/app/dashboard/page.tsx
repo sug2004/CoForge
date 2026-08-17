@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { api, Workspace, Session } from '@/lib/api';
 import AppShell, { Avatar } from '@/components/AppShell';
 
-const WS_COLORS = ['#6366f1', '#22c55e', '#f97316', '#3b82f6', '#ec4899', '#14b8a6'];
+const WS_COLORS = ['#e2652f', '#5b9bd1', '#7fb787', '#d9b54c', '#b18ad1', '#f08a54'];
 
 function StatCard({ icon, value, label, delta }: { icon: string; value: number | string; label: string; delta?: string }) {
   return (
@@ -38,6 +38,7 @@ function SectionHeader({ title, onViewAll }: { title: string; onViewAll?: () => 
 export default function DashboardPage() {
   const router = useRouter();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [recentSessions, setRecentSessions] = useState<(Session & { creator?: { id: string; username: string; avatarUrl: string | null } })[]>([]);
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
   const [greeting, setGreeting] = useState('');
@@ -47,6 +48,18 @@ export default function DashboardPage() {
     api.workspaces.list().then(wsList => {
       setWorkspaces(wsList);
       setTotalProjects(wsList.reduce((sum, ws) => sum + (ws.projects?.length ?? 0), 0));
+
+      const allProjectIds = wsList.flatMap(ws => (ws.projects ?? []).map(p => p.id));
+      Promise.all(allProjectIds.map(pid => api.projects.get(pid).catch(() => null)))
+        .then(projects => {
+          const sessions = projects
+            .filter(Boolean)
+            .flatMap(p => (p?.sessions ?? []).map(s => ({ ...s, creator: s.creator })))
+            .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
+            .slice(0, 8);
+          setRecentSessions(sessions);
+        })
+        .catch(() => {});
     }).catch(() => router.push('/login'));
     const h = new Date().getHours();
     setGreeting(h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening');
@@ -87,7 +100,7 @@ export default function DashboardPage() {
         <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-6">
 
           {/* Hero */}
-          <div className="relative rounded-2xl overflow-hidden p-6 flex items-center justify-between" style={{ background: 'linear-gradient(135deg, #1a1f35 0%, #0f1420 100%)', border: '1px solid var(--border)', minHeight: 140 }}>
+          <div className="relative rounded-2xl overflow-hidden p-6 flex items-center justify-between" style={{ background: 'linear-gradient(135deg, rgba(99,102,241,0.12) 0%, var(--bg-card) 100%)', border: '1px solid var(--border)', minHeight: 140 }}>
             <div>
               <h1 className="text-2xl font-bold mb-1" style={{ color: 'var(--text-1)' }}>
                 {greeting} 👋
@@ -95,8 +108,7 @@ export default function DashboardPage() {
               <p className="text-sm mb-4" style={{ color: 'var(--text-2)' }}>Pick up where you left off or start something new.</p>
               <button
                 onClick={() => router.push('/dashboard/sessions')}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-white"
-                style={{ background: 'var(--accent)' }}
+                className="btn-primary flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold"
               >
                 Continue Working →
               </button>
@@ -213,76 +225,74 @@ export default function DashboardPage() {
 
         {/* Right panel */}
         <aside className="w-72 shrink-0 overflow-y-auto p-4 flex flex-col gap-5" style={{ borderLeft: '1px solid var(--border)' }}>
-          {/* Online Collaborators */}
+          {/* Workspace Members */}
           <div>
-            <SectionHeader title="Online Collaborators" />
+            <SectionHeader title="Workspace Members" />
             <div className="flex flex-col gap-1">
-              {[
-                { name: 'You', sub: 'You', crown: true },
-                { name: 'samar', sub: 'Active', online: true },
-                { name: 'nivedha', sub: 'Active', online: true },
-                { name: 'arjun', sub: 'Idle' },
-                { name: 'meghana', sub: 'Idle' },
-              ].map(u => (
-                <div key={u.name} className="flex items-center gap-2.5 px-2 py-2 rounded-lg" style={{ background: 'transparent' }}>
-                  <div className="relative">
-                    <Avatar name={u.name} size={8} color={u.crown ? '#6366f1' : '#374151'} />
-                    {u.online && <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2" style={{ background: 'var(--green)', borderColor: 'var(--bg-surface)' }} />}
-                    {u.crown && <span className="absolute -top-1 -right-1 text-[10px]">👑</span>}
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium" style={{ color: 'var(--text-1)' }}>{u.name}</p>
-                    <p className="text-xs" style={{ color: u.online ? 'var(--green)' : 'var(--text-3)' }}>{u.sub}</p>
+              {workspaces.flatMap(ws => (ws.members ?? []).map(m => ({ ...m, wsName: ws.name })))
+                .filter((m, i, arr) => arr.findIndex(x => x.userId === m.userId) === i)
+                .slice(0, 8)
+                .map(m => (
+                <div key={m.userId} className="flex items-center gap-2.5 px-2 py-2 rounded-lg">
+                  <Avatar name={m.userId.slice(0, 6)} size={8} color="var(--text-3)" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate" style={{ color: 'var(--text-1)' }}>{m.userId.slice(0, 8)}…</p>
+                    <p className="text-xs" style={{ color: 'var(--text-3)' }}>{m.role}</p>
                   </div>
                 </div>
               ))}
+              {workspaces.flatMap(ws => (ws.members ?? [])).length === 0 && (
+                <p className="text-xs" style={{ color: 'var(--text-3)' }}>No members yet</p>
+              )}
             </div>
           </div>
 
-          {/* Recent Commits */}
+          {/* Recent Sessions */}
           <div>
-            <SectionHeader title="Recent Commits" />
+            <SectionHeader title="Recent Sessions" onViewAll={() => router.push('/dashboard/sessions')} />
             <div className="flex flex-col gap-3">
-              {[
-                { msg: 'feat: add cursor awareness', by: 'sug2004', hash: 'a1b2c3d', time: '2h ago' },
-                { msg: 'fix: resolve merge conflicts', by: 'samar', hash: 'd4e5f6a', time: '5h ago' },
-                { msg: 'chore: update dependencies', by: 'sug2004', hash: 'f7g8h9i', time: '1d ago' },
-                { msg: 'feat: improve session list UI', by: 'nivedha', hash: 'j1k2l3m', time: '2d ago' },
-              ].map(c => (
-                <div key={c.hash} className="flex items-start gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full mt-1.5 shrink-0" style={{ background: 'var(--accent)' }} />
+              {recentSessions.length === 0 && (
+                <p className="text-xs" style={{ color: 'var(--text-3)' }}>No recent sessions</p>
+              )}
+              {recentSessions.map(s => (
+                <div
+                  key={s.id}
+                  className="flex items-start gap-2 cursor-pointer rounded-lg px-2 py-1.5 transition-colors"
+                  style={{ ':hover': { background: 'var(--bg-hover)' } }}
+                  onClick={() => router.push(`/session/${s.id}`)}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--bg-hover)'; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                >
+                  <div className="w-1.5 h-1.5 rounded-full mt-1.5 shrink-0" style={{ background: s.endedAt ? 'var(--text-3)' : 'var(--green)' }} />
                   <div className="flex-1 min-w-0">
-                    <p className="text-xs truncate" style={{ color: 'var(--text-1)' }}>{c.msg}</p>
-                    <p className="text-[11px]" style={{ color: 'var(--text-3)' }}>by {c.by}</p>
-                  </div>
-                  <div className="flex flex-col items-end gap-0.5 shrink-0">
-                    <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>{c.time}</span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded font-mono" style={{ background: 'var(--bg-hover)', color: 'var(--text-3)' }}>{c.hash}</span>
+                    <p className="text-xs truncate" style={{ color: 'var(--text-1)' }}>
+                      {s.creator?.username ?? 'User'} — {new Date(s.startedAt).toLocaleDateString()}
+                    </p>
+                    <p className="text-[11px]" style={{ color: s.endedAt ? 'var(--text-3)' : 'var(--green)' }}>
+                      {s.endedAt ? 'ended' : 'live'}
+                    </p>
                   </div>
                 </div>
               ))}
             </div>
           </div>
 
-          {/* Upcoming Tasks */}
+          {/* Quick Stats */}
           <div>
-            <SectionHeader title="Upcoming Tasks" />
+            <SectionHeader title="Overview" />
             <div className="flex flex-col gap-2">
-              {[
-                { label: 'Implement file presence', sub: 'AI Code Assistant', badge: 'Today', badgeColor: 'var(--accent)' },
-                { label: 'Add inline chat feedback', sub: 'Realtime Chat App', badge: 'Tomorrow', badgeColor: '#374151' },
-                { label: 'Refactor auth module', sub: 'Mobile Companion', badge: 'May 10', badgeColor: '#374151' },
-                { label: 'Write integration tests', sub: 'Docs Intelligence', badge: 'May 12', badgeColor: '#374151' },
-              ].map(t => (
-                <div key={t.label} className="flex items-center gap-2.5">
-                  <div className="w-4 h-4 rounded-full shrink-0" style={{ border: '1.5px solid var(--border)' }} />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium truncate" style={{ color: 'var(--text-1)' }}>{t.label}</p>
-                    <p className="text-[11px]" style={{ color: 'var(--text-3)' }}>{t.sub}</p>
-                  </div>
-                  <span className="text-[10px] px-2 py-0.5 rounded-full font-medium shrink-0 text-white" style={{ background: t.badgeColor }}>{t.badge}</span>
-                </div>
-              ))}
+              <div className="flex items-center justify-between px-2 py-1.5">
+                <span className="text-xs" style={{ color: 'var(--text-3)' }}>Total workspaces</span>
+                <span className="text-xs font-semibold" style={{ color: 'var(--text-1)' }}>{workspaces.length}</span>
+              </div>
+              <div className="flex items-center justify-between px-2 py-1.5">
+                <span className="text-xs" style={{ color: 'var(--text-3)' }}>Total projects</span>
+                <span className="text-xs font-semibold" style={{ color: 'var(--text-1)' }}>{totalProjects}</span>
+              </div>
+              <div className="flex items-center justify-between px-2 py-1.5">
+                <span className="text-xs" style={{ color: 'var(--text-3)' }}>Recent sessions</span>
+                <span className="text-xs font-semibold" style={{ color: 'var(--text-1)' }}>{recentSessions.length}</span>
+              </div>
             </div>
           </div>
         </aside>

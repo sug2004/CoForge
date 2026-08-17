@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const PROTECTED = ['/dashboard', '/session'];
+const PROTECTED = ['/dashboard', '/session', '/profile'];
 
 export function middleware(req: NextRequest) {
   const token = req.cookies.get('token')?.value;
@@ -15,5 +15,5 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/dashboard/:path*', '/session/:path*'],
+  matcher: ['/dashboard/:path*', '/session/:path*', '/profile'],
 };

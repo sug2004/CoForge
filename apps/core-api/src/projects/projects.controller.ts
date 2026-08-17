@@ -17,6 +17,11 @@ import { ProjectsService } from './projects.service';
 export class ProjectsController {
   constructor(private readonly projects: ProjectsService) {}
 
+  @Get('projects')
+  findAll(@Req() req) {
+    return this.projects.findAllForUser(req.user.id);
+  }
+
   @Post('workspaces/:id/projects')
   create(
     @Req() req,

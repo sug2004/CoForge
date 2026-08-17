@@ -13,48 +13,69 @@ import {
 import '@xterm/xterm/css/xterm.css';
 
 const C = {
-  bg: '#0a0c10',
-  surface: '#0d1017',
-  border: '#1e2535',
-  text1: '#e8f0e0',
-  text2: '#7a9070',
-  text3: '#3d5040',
-  accent: '#3ef07f',
-  green: '#3ef07f',
-  red: '#f05a3e',
-  yellow: '#f0d03e',
+  bg: 'var(--bg-base)',
+  surface: 'var(--bg-surface)',
+  border: 'var(--border)',
+  text1: 'var(--text-1)',
+  text2: 'var(--text-2)',
+  text3: 'var(--text-3)',
+  accent: 'var(--accent)',
+  green: 'var(--green)',
+  red: 'var(--red)',
+  yellow: 'var(--yellow)',
 };
 
-const TERM_THEME = {
-  background: C.bg,
-  foreground: C.text1,
-  cursor: C.accent,
-  cursorAccent: C.bg,
-  selectionBackground: '#3ef07f33',
-  black: '#0a0c10',
-  red: '#f05a3e',
-  green: '#3ef07f',
-  yellow: '#f0d03e',
-  blue: '#3eb8f0',
-  magenta: '#9d7ff0',
-  cyan: '#3ef0d0',
-  white: '#e8f0e0',
-  brightBlack: '#3d5040',
-  brightRed: '#f07f7f',
-  brightGreen: '#7ff0a5',
-  brightYellow: '#f0e07f',
-  brightBlue: '#7fd0f0',
-  brightMagenta: '#c0a5f0',
-  brightCyan: '#7ff0e0',
-  brightWhite: '#ffffff',
-};
+function resolveVar(v: string): string {
+  if (!v.startsWith('var(')) return v;
+  const name = v.slice(4, -1);
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function getTermTheme() {
+  const g = (n: string) => resolveVar(`var(${n})`);
+  return {
+    background: g('--bg-base'),
+    foreground: g('--text-1'),
+    cursor: g('--accent'),
+    cursorAccent: g('--bg-base'),
+    selectionBackground: resolveVar('var(--accent)') + '33',
+    black: g('--bg-base'),
+    red: g('--red'),
+    green: g('--green'),
+    yellow: g('--yellow'),
+    blue: '#5b9bd1',
+    magenta: g('--purple'),
+    cyan: '#4ecdc4',
+    white: g('--text-1'),
+    brightBlack: g('--text-3'),
+    brightRed: '#e87c7f',
+    brightGreen: '#a4d4ae',
+    brightYellow: '#e6cc7a',
+    brightBlue: '#8bb8d9',
+    brightMagenta: '#c9a6e0',
+    brightCyan: '#7ed4df',
+    brightWhite: '#ffffff',
+  };
+}
 
 const HEADER_H = 32;
 const MIN_H = 120;
 const MAX_RATIO = 0.6;
 const DEFAULT_H = 200;
 
-type Tab = 'terminal' | 'preview';
+type PanelTab = 'preview';
+
+interface TerminalTab {
+  id: number;
+  name: string;
+  status: 'connecting' | 'connected' | 'disconnected';
+  term: Terminal | null;
+  fit: FitAddon | null;
+  channel: SandboxChannel | null;
+  containerRef: HTMLDivElement | null;
+  resizeTimer: ReturnType<typeof setTimeout> | null;
+  ro: ResizeObserver | null;
+}
 
 interface Props {
   sessionId: string;
@@ -62,10 +83,13 @@ interface Props {
   onToggleCollapse: () => void;
 }
 
+let nextTermId = 1;
+
 export default function SandboxPanel({ sessionId, collapsed, onToggleCollapse }: Props) {
-  const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [panelH, setPanelH] = useState(DEFAULT_H);
-  const [tab, setTab] = useState<Tab>('terminal');
+  const [panelTab, setPanelTab] = useState<PanelTab | null>(null);
+  const [tabs, setTabs] = useState<TerminalTab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<number | null>(null);
   const [previewPort, setPreviewPort] = useState('3000');
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewErr, setPreviewErr] = useState<string | null>(null);
@@ -73,27 +97,84 @@ export default function SandboxPanel({ sessionId, collapsed, onToggleCollapse }:
   const [previewPorts, setPreviewPorts] = useState<PreviewPortInfo[] | null>(null);
   const [portsErr, setPortsErr] = useState<string | null>(null);
   const lastHRef = useRef(DEFAULT_H);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const channelRef = useRef<SandboxChannel | null>(null);
-  const termRef = useRef<Terminal | null>(null);
-  const fitRef = useRef<FitAddon | null>(null);
-  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dragging = useRef(false);
   const startY = useRef(0);
   const startH = useRef(0);
+  const tabsRef = useRef<TerminalTab[]>([]);
+  const activeTabIdRef = useRef<number | null>(null);
 
-  const focusTerminal = useCallback(() => {
-    termRef.current?.focus();
-  }, []);
+  tabsRef.current = tabs;
+  activeTabIdRef.current = activeTabId;
 
   const toggleCollapse = useCallback(() => {
     if (!collapsed) lastHRef.current = panelH;
     onToggleCollapse();
   }, [collapsed, panelH, onToggleCollapse]);
 
+  const fitActive = useCallback(() => {
+    const tab = tabsRef.current.find((t) => t.id === activeTabIdRef.current);
+    if (tab?.fit) {
+      try {
+        tab.fit.fit();
+      } catch {}
+    }
+  }, []);
+
+  const focusActive = useCallback(() => {
+    const tab = tabsRef.current.find((t) => t.id === activeTabIdRef.current);
+    tab?.term?.focus();
+  }, []);
+
+  const updateTab = useCallback((id: number, patch: Partial<TerminalTab>) => {
+    setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+  }, []);
+
+  const disposeTab = useCallback((t: TerminalTab) => {
+    if (t.resizeTimer) clearTimeout(t.resizeTimer);
+    t.ro?.disconnect();
+    t.channel?.close();
+    t.term?.dispose();
+  }, []);
+
+  const addTab = useCallback(() => {
+    const id = nextTermId++;
+    const name = `Terminal ${id}`;
+    setTabs((prev) => [
+      ...prev,
+      { id, name, status: 'connecting', term: null, fit: null, channel: null, containerRef: null, resizeTimer: null, ro: null },
+    ]);
+    setActiveTabId(id);
+    setPanelTab(null);
+  }, []);
+
+  const removeTab = useCallback(
+    (id: number) => {
+      setTabs((prev) => {
+        const filtered = prev.filter((t) => t.id !== id);
+        if (filtered.length === 0) return prev;
+        const removed = prev.find((t) => t.id === id);
+        if (removed) disposeTab(removed);
+        if (activeTabIdRef.current === id) {
+          setActiveTabId(filtered[filtered.length - 1].id);
+        }
+        return filtered;
+      });
+    },
+    [disposeTab],
+  );
+
+  const showTerminalContent = panelTab === null;
+  const activeTab = tabs.find((t) => t.id === activeTabId);
+  const effectiveH = collapsed ? HEADER_H : panelH;
+
+  // Create xterm + channel for the active tab
   useEffect(() => {
     if (collapsed) return;
-    const container = containerRef.current;
+
+    const inst = tabs.find((t) => t.id === activeTabId);
+    if (!inst || inst.term) return;
+
+    const container = inst.containerRef;
     if (!container) return;
 
     const term = new Terminal({
@@ -101,73 +182,86 @@ export default function SandboxPanel({ sessionId, collapsed, onToggleCollapse }:
       fontSize: 13,
       fontFamily: '"Cascadia Code", Consolas, monospace',
       scrollback: 5000,
-      theme: TERM_THEME,
+      theme: getTermTheme(),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
 
-    termRef.current = term;
-    fitRef.current = fit;
-
     const doFit = () => {
-      try {
-        fit.fit();
-      } catch {
-        // container may be hidden
-      }
-    };
-
-    const doFitAndFocus = () => {
-      doFit();
-      term.focus();
+      if (activeTabIdRef.current !== inst.id) return;
+      try { fit.fit(); } catch {}
     };
 
     const raf = requestAnimationFrame(() => {
       term.open(container);
 
       term.onData((data) => {
-        channelRef.current?.send(data);
+        const current = tabsRef.current.find((t) => t.id === inst.id);
+        current?.channel?.send(data);
       });
       term.onResize(({ cols, rows }) => {
-        if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
-        resizeTimerRef.current = setTimeout(() => {
-          resizeTimerRef.current = null;
-          channelRef.current?.sendResize(cols, rows);
+        const current = tabsRef.current.find((t) => t.id === inst.id);
+        if (current?.resizeTimer) clearTimeout(current.resizeTimer);
+        const timer = setTimeout(() => {
+          current?.channel?.sendResize(cols, rows);
         }, 150);
+        updateTab(inst.id, { resizeTimer: timer });
       });
 
       const channel = new SandboxChannel(sessionId);
-      channelRef.current = channel;
-
       channel.onData((data) => {
         term.write(data);
       });
       channel.onOpen(() => {
-        setStatus('connected');
-        doFitAndFocus();
+        updateTab(inst.id, { status: 'connected' });
+        if (activeTabIdRef.current === inst.id) {
+          doFit();
+          term.focus();
+        }
         channel.sendResize(term.cols, term.rows);
       });
       channel.onClose(() => {
-        setStatus('disconnected');
+        updateTab(inst.id, { status: 'disconnected' });
       });
       channel.connect();
+
+      updateTab(inst.id, { term, fit, channel });
     });
 
     const ro = new ResizeObserver(() => doFit());
     ro.observe(container);
+    updateTab(inst.id, { ro });
 
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
-      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
-      channelRef.current?.close();
-      channelRef.current = null;
-      term.dispose();
-      termRef.current = null;
-      fitRef.current = null;
+      const current = tabsRef.current.find((t) => t.id === inst.id);
+      if (current) {
+        if (current.resizeTimer) clearTimeout(current.resizeTimer);
+        current.channel?.close();
+        current.term?.dispose();
+      }
+      updateTab(inst.id, { term: null, fit: null, channel: null, ro: null });
     };
-  }, [sessionId, collapsed]);
+  }, [activeTabId, collapsed, tabs.length, sessionId, updateTab]);
 
+  useEffect(() => {
+    fitActive();
+  }, [activeTabId, panelH, collapsed, fitActive]);
+
+  useEffect(() => {
+    if (collapsed || tabs.length > 0) return;
+    addTab();
+  }, [collapsed, tabs.length, addTab]);
+
+  useEffect(() => {
+    return () => {
+      void closePreview(sessionId);
+      tabsRef.current.forEach((t) => disposeTab(t));
+    };
+  }, [sessionId, disposeTab]);
+
+  // Drag to resize
   useEffect(() => {
     if (collapsed) return;
     function onMove(e: MouseEvent) {
@@ -190,12 +284,6 @@ export default function SandboxPanel({ sessionId, collapsed, onToggleCollapse }:
     };
   }, [collapsed]);
 
-  useEffect(() => {
-    return () => {
-      void closePreview(sessionId);
-    };
-  }, [sessionId]);
-
   const refreshPorts = useCallback(async () => {
     setPortsErr(null);
     try {
@@ -207,9 +295,9 @@ export default function SandboxPanel({ sessionId, collapsed, onToggleCollapse }:
   }, [sessionId]);
 
   useEffect(() => {
-    if (tab !== 'preview' || collapsed) return;
+    if (panelTab !== 'preview' || collapsed) return;
     void refreshPorts();
-  }, [tab, collapsed, refreshPorts]);
+  }, [panelTab, collapsed, refreshPorts]);
 
   const handleStartPreview = useCallback(async () => {
     setPreviewLoading(true);
@@ -245,8 +333,6 @@ export default function SandboxPanel({ sessionId, collapsed, onToggleCollapse }:
     setPreviewErr(null);
   }, [sessionId]);
 
-  const effectiveH = collapsed ? HEADER_H : panelH;
-
   return (
     <div
       style={{
@@ -281,18 +367,20 @@ export default function SandboxPanel({ sessionId, collapsed, onToggleCollapse }:
           transition: 'background 0.15s',
         }}
         onMouseEnter={(e) => {
-          (e.currentTarget as HTMLElement).style.background = C.accent + '33';
+          (e.currentTarget as HTMLElement).style.background = 'var(--accent-soft)';
         }}
         onMouseLeave={(e) => {
           (e.currentTarget as HTMLElement).style.background = 'transparent';
         }}
       />
+
+      {/* Tab bar */}
       <div
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 8,
-          padding: '0 10px',
+          gap: 0,
+          padding: '0 6px',
           height: HEADER_H,
           borderBottom: `1px solid ${C.border}`,
           flexShrink: 0,
@@ -316,36 +404,171 @@ export default function SandboxPanel({ sessionId, collapsed, onToggleCollapse }:
         >
           ▼
         </button>
-        <TabButton active={tab === 'terminal'} onClick={() => setTab('terminal')}>
-          Terminal
-        </TabButton>
-        <TabButton active={tab === 'preview'} onClick={() => setTab('preview')}>
+
+        {tabs.map((t) => (
+          <div
+            key={t.id}
+            onClick={() => {
+              setActiveTabId(t.id);
+              setPanelTab(null);
+            }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '4px 8px',
+              cursor: 'pointer',
+              borderBottom:
+                showTerminalContent && activeTabId === t.id
+                  ? `2px solid ${C.accent}`
+                  : '2px solid transparent',
+              color: showTerminalContent && activeTabId === t.id ? C.accent : C.text2,
+              fontSize: 11,
+              fontWeight: 600,
+              letterSpacing: 0.3,
+              userSelect: 'none',
+              transition: 'color 0.12s',
+            }}
+          >
+            <span
+              style={{
+                fontSize: 8,
+                color:
+                  t.status === 'connected'
+                    ? C.green
+                    : t.status === 'connecting'
+                      ? C.yellow
+                      : C.red,
+              }}
+            >
+              ●
+            </span>
+            <span>{t.name}</span>
+            {tabs.length > 1 && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  removeTab(t.id);
+                }}
+                title={`Close ${t.name}`}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: C.text3,
+                  fontSize: 13,
+                  cursor: 'pointer',
+                  padding: '0 2px',
+                  lineHeight: 1,
+                  borderRadius: 3,
+                }}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLElement).style.color = C.red;
+                  (e.currentTarget as HTMLElement).style.background = 'var(--accent-soft)';
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLElement).style.color = C.text3;
+                  (e.currentTarget as HTMLElement).style.background = 'none';
+                }}
+              >
+                ×
+              </button>
+            )}
+          </div>
+        ))}
+
+        <button
+          type="button"
+          onClick={addTab}
+          title="New terminal"
+          style={{
+            background: 'none',
+            border: 'none',
+            color: C.text2,
+            fontSize: 16,
+            cursor: 'pointer',
+            padding: '2px 6px',
+            lineHeight: 1,
+            borderRadius: 4,
+            marginLeft: 2,
+          }}
+          onMouseEnter={(e) => {
+            (e.currentTarget as HTMLElement).style.color = C.accent;
+            (e.currentTarget as HTMLElement).style.background = 'var(--accent-soft)';
+          }}
+          onMouseLeave={(e) => {
+            (e.currentTarget as HTMLElement).style.color = C.text2;
+            (e.currentTarget as HTMLElement).style.background = 'none';
+          }}
+        >
+          +
+        </button>
+
+        <span
+          style={{
+            fontSize: 11,
+            color:
+              activeTab?.status === 'connected'
+                ? C.green
+                : activeTab?.status === 'connecting'
+                  ? C.yellow
+                  : C.red,
+            marginLeft: 4,
+          }}
+        >
+          {activeTab?.status === 'connected'
+            ? '● connected'
+            : activeTab?.status === 'connecting'
+              ? '○ connecting…'
+              : '○ reconnecting…'}
+        </span>
+
+        <div style={{ flex: 1 }} />
+
+        {showTerminalContent && (
+          <>
+            <button
+              type="button"
+              onClick={() => activeTab?.channel?.stop()}
+              title="Send Ctrl+C"
+              style={btnStyle}
+            >
+              Ctrl+C
+            </button>
+            <button
+              type="button"
+              onClick={() => activeTab?.term?.clear()}
+              style={btnStyle}
+            >
+              Clear
+            </button>
+          </>
+        )}
+
+        <TabButton active={panelTab === 'preview'} onClick={() => setPanelTab('preview')}>
           Preview
         </TabButton>
-        <span style={{ fontSize: 11, color: status === 'connected' ? C.green : status === 'connecting' ? C.yellow : C.red }}>
-          {status === 'connected' ? '●' : status === 'connecting' ? '○' : '○'}
-          {status === 'connected' ? ' connected' : status === 'connecting' ? ' connecting…' : ' reconnecting…'}
-        </span>
-        <div style={{ flex: 1 }} />
-        <button type="button" onClick={() => channelRef.current?.stop()} title="Send Ctrl+C" style={btnStyle}>
-          Ctrl+C
-        </button>
-        <button type="button" onClick={() => termRef.current?.clear()} style={btnStyle}>
-          Clear
-        </button>
       </div>
+
       <div style={{ position: 'relative', flex: 1, overflow: 'hidden' }}>
-        <div
-          ref={containerRef}
-          onClick={focusTerminal}
-          style={{
-            position: 'absolute',
-            inset: 0,
-            padding: 4,
-            background: C.bg,
-          }}
-        />
-        {tab === 'preview' && (
+        {tabs.map((t) => (
+          <div
+            key={t.id}
+            ref={(el) => {
+              t.containerRef = el;
+            }}
+            onClick={focusActive}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              padding: 4,
+              background: C.bg,
+              display: showTerminalContent && activeTabId === t.id ? 'block' : 'none',
+            }}
+          />
+        ))}
+
+        {panelTab === 'preview' && (
           <div
             style={{
               position: 'absolute',
@@ -442,7 +665,7 @@ export default function SandboxPanel({ sessionId, collapsed, onToggleCollapse }:
                         gap: 6,
                         padding: '4px 10px',
                         border: `1px solid ${previewUrl === p.url ? C.accent : C.border}`,
-                        background: previewUrl === p.url ? '#14352a' : '#111520',
+                        background: previewUrl === p.url ? 'var(--accent-soft)' : 'var(--bg-card)',
                         color: C.text1,
                         borderRadius: 8,
                         fontSize: 12,
@@ -530,7 +753,7 @@ function TabButton({
         letterSpacing: 0.5,
         textTransform: 'uppercase',
         cursor: 'pointer',
-        padding: '4px 2px',
+        padding: '4px 8px',
         borderBottom: active ? `2px solid ${C.accent}` : '2px solid transparent',
       }}
     >
@@ -540,9 +763,9 @@ function TabButton({
 }
 
 const btnStyle: React.CSSProperties = {
-  border: '1px solid #1e2535',
-  background: '#111520',
-  color: '#7a9070',
+  border: `1px solid var(--border)`,
+  background: 'var(--bg-card)',
+  color: 'var(--text-2)',
   borderRadius: 6,
   padding: '3px 10px',
   fontSize: 12,
