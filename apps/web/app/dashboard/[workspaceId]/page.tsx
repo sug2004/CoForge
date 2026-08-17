@@ -5,7 +5,7 @@ import { useRouter, useParams } from 'next/navigation';
 import { api, Project } from '@/lib/api';
 import AppShell from '@/components/AppShell';
 
-const WS_COLORS = ['#6366f1', '#22c55e', '#f97316', '#3b82f6', '#ec4899', '#14b8a6'];
+const WS_COLORS = ['#e2652f', '#5b9bd1', '#7fb787', '#d9b54c', '#b18ad1', '#f08a54'];
 
 export default function WorkspacePage() {
   const router = useRouter();

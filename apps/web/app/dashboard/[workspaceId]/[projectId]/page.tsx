@@ -5,7 +5,7 @@ import { useRouter, useParams } from 'next/navigation';
 import { api, Session, Project, Participant } from '@/lib/api';
 import AppShell, { Avatar } from '@/components/AppShell';
 
-const PEER_COLORS = ['#6366f1','#22c55e','#f97316','#3b82f6','#ec4899','#14b8a6','#e05252','#d4b84a'];
+const PEER_COLORS = ['#e2652f','#5b9bd1','#7fb787','#d9b54c','#b18ad1','#f08a54','#d1454a','#4ecdc4'];
 
 function colorFor(id: string) {
   return PEER_COLORS[id.charCodeAt(0) % PEER_COLORS.length];
@@ -56,7 +56,7 @@ function SessionCard({ session, onJoin, onDelete, live }: {
     <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 16px' }}>
         {/* icon */}
-        <div style={{ width: 40, height: 40, borderRadius: 10, background: live ? 'rgba(34,197,94,0.12)' : 'var(--bg-hover)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <div style={{ width: 40, height: 40, borderRadius: 10, background: live ? 'rgba(127,183,135,0.14)' : 'var(--bg-hover)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
           <svg viewBox="0 0 24 24" fill="none" stroke={live ? 'var(--green)' : 'var(--text-3)'} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="18" height="18">
             <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
           </svg>
@@ -69,7 +69,7 @@ function SessionCard({ session, onJoin, onDelete, live }: {
               {session.creator?.username ?? 'Session'}
             </span>
             {live && (
-              <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 20, fontWeight: 700, background: 'rgba(34,197,94,0.15)', color: 'var(--green)', letterSpacing: '0.05em' }}>
+              <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 20, fontWeight: 700, background: 'rgba(127,183,135,0.14)', color: 'var(--green)', letterSpacing: '0.05em' }}>
                 LIVE
               </span>
             )}
@@ -92,7 +92,8 @@ function SessionCard({ session, onJoin, onDelete, live }: {
         <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
           <button
             onClick={onJoin}
-            style={{ padding: '7px 18px', borderRadius: 8, background: 'var(--accent)', border: 'none', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+            style={{ padding: '7px 18px', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+            className="btn-primary"
           >
             Join
           </button>
@@ -181,7 +182,8 @@ export default function ProjectPage() {
           <button
             onClick={startSession}
             disabled={loading}
-            style={{ padding: '8px 18px', borderRadius: 8, background: 'var(--accent)', border: 'none', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: loading ? 0.5 : 1, flexShrink: 0 }}
+            style={{ padding: '8px 18px', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: loading ? 0.5 : 1, flexShrink: 0 }}
+            className="btn-primary"
           >
             {loading ? 'Starting...' : '+ New Session'}
           </button>

@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { api, Workspace } from '@/lib/api';
 import AppShell from '@/components/AppShell';
 
-const WS_COLORS = ['#6366f1', '#22c55e', '#f97316', '#3b82f6', '#ec4899', '#14b8a6'];
+const WS_COLORS = ['#e2652f', '#5b9bd1', '#7fb787', '#d9b54c', '#b18ad1', '#f08a54'];
 
 export default function WorkspacesPage() {
   const router = useRouter();
@@ -25,14 +25,20 @@ export default function WorkspacesPage() {
       const ws = await api.workspaces.create(name.trim());
       setWorkspaces(prev => [...prev, { ...ws, projects: [] }]);
       setName('');
+    } catch (err) {
+      alert((err as Error).message ?? 'Failed to create workspace');
     } finally { setLoading(false); }
   }
 
   async function deleteWs(e: React.MouseEvent, id: string) {
     e.stopPropagation();
     if (!confirm('Delete this workspace and all its projects?')) return;
-    await api.workspaces.delete(id);
-    setWorkspaces(prev => prev.filter(w => w.id !== id));
+    try {
+      await api.workspaces.delete(id);
+      setWorkspaces(prev => prev.filter(w => w.id !== id));
+    } catch (err) {
+      alert((err as Error).message ?? 'Failed to delete workspace');
+    }
   }
 
   return (

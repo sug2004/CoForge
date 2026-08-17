@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { api, Session, Workspace } from '@/lib/api';
 import AppShell, { Avatar } from '@/components/AppShell';
 
-const PEER_COLORS = ['#6366f1', '#22c55e', '#f97316', '#3b82f6', '#ec4899', '#14b8a6'];
+const PEER_COLORS = ['#e2652f', '#5b9bd1', '#7fb787', '#d9b54c', '#b18ad1', '#f08a54'];
 function colorFor(id: string) { return PEER_COLORS[id.charCodeAt(0) % PEER_COLORS.length]; }
 
 type SessionWithCtx = Session & { projectName: string; wsId: string; projectId: string };
@@ -60,6 +60,7 @@ export default function SessionsPage() {
                 style={{
                   background: filter === f ? 'var(--accent)' : 'transparent',
                   color: filter === f ? '#fff' : 'var(--text-2)',
+                  border: 'none',
                 }}
               >
                 {f}
@@ -80,11 +81,11 @@ export default function SessionsPage() {
                 <div
                   key={s.id}
                   className="flex items-center gap-4 p-4 rounded-xl cursor-pointer group"
-                  style={{ background: 'var(--bg-card)', border: `1px solid ${live ? 'rgba(34,197,94,0.3)' : 'var(--border)'}` }}
+                  style={{ background: 'var(--bg-card)', border: `1px solid ${live ? 'rgba(127,183,135,0.3)' : 'var(--border)'}` }}
                   onClick={() => router.push(`/session/${s.id}`)}
                 >
                   {/* status dot */}
-                  <div style={{ width: 36, height: 36, borderRadius: 9, background: live ? 'rgba(34,197,94,0.12)' : 'var(--bg-hover)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <div style={{ width: 36, height: 36, borderRadius: 9, background: live ? 'rgba(127,183,135,0.14)' : 'var(--bg-hover)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                     <svg viewBox="0 0 24 24" fill="none" stroke={live ? 'var(--green)' : 'var(--text-3)'} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
                       <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
                     </svg>
@@ -97,7 +98,7 @@ export default function SessionsPage() {
                         {s.projectName}
                       </span>
                       {live && (
-                        <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 20, fontWeight: 700, background: 'rgba(34,197,94,0.15)', color: 'var(--green)', letterSpacing: '0.05em', flexShrink: 0 }}>
+                        <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 20, fontWeight: 700, background: 'rgba(127,183,135,0.14)', color: 'var(--green)', letterSpacing: '0.05em', flexShrink: 0 }}>
                           LIVE
                         </span>
                       )}

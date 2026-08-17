@@ -18,11 +18,6 @@ const Icon = {
       <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
     </svg>
   ),
-  workspaces: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
-      <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z" /><polyline points="9 22 9 12 15 12 15 22" />
-    </svg>
-  ),
   projects: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
       <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
@@ -31,38 +26,6 @@ const Icon = {
   sessions: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
       <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
-    </svg>
-  ),
-  agents: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
-      <rect x="3" y="11" width="18" height="10" rx="2" /><path d="M9 11V7a3 3 0 016 0v4" />
-      <circle cx="12" cy="16" r="1" fill="currentColor" />
-    </svg>
-  ),
-  activity: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
-      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-    </svg>
-  ),
-  settings: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
-    </svg>
-  ),
-  bell: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
-      <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 01-3.46 0" />
-    </svg>
-  ),
-  help: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
-      <circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" />
-    </svg>
-  ),
-  search: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
-      <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
     </svg>
   ),
   chevronDown: (
@@ -76,7 +39,7 @@ const Icon = {
     </svg>
   ),
   bolt: (
-    <svg viewBox="0 0 24 24" fill="#facc15" width="14" height="14">
+    <svg viewBox="0 0 24 24" fill="var(--yellow)" width="14" height="14">
       <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
 
     </svg>
@@ -90,13 +53,10 @@ const Icon = {
 
 const NAV = [
   { label: 'Dashboard', icon: Icon.dashboard, href: '/dashboard', exact: true },
-  { label: 'Workspaces', icon: Icon.workspaces, href: '/dashboard/workspaces', exact: false, matchPrefix: '/dashboard/' },
-  { label: 'Projects', icon: Icon.projects, href: '/dashboard/projects', exact: false },
+  { label: 'Projects', icon: Icon.projects, href: '/dashboard/projects', exact: true },
   { label: 'Sessions', icon: Icon.sessions, href: '/dashboard/sessions', exact: false, matchPrefix: '/session' },
   { label: 'Profile', icon: Icon.user, href: '/profile', exact: true },
 ];
-
-const WS_COLORS = ['#6366f1', '#22c55e', '#f97316', '#3b82f6', '#ec4899', '#14b8a6'];
 
 export function Avatar({ name, avatarUrl, size = 7, color }: {
   name: string; avatarUrl?: string | null; size?: number; color?: string;
@@ -120,18 +80,22 @@ export default function AppShell({ children, user, editorMode = false }: {
 }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [me, setMe] = useState<AuthUser | null>(user ?? null);
+  const [me, setMe] = useState<AuthUser | null>(null);
   const [showUserMenu, setShowUserMenu] = useState(false);
-  const [workspaces, setWorkspaces] = useState<{ id: string; name: string }[]>([]);
+  const [projects, setProjects] = useState<{ id: string; name: string; workspace: { id: string; name: string } }[]>([]);
 
   useEffect(() => {
-    if (!me) api.auth.me().then(setMe).catch(() => { });
-    api.workspaces.list().then(setWorkspaces).catch(() => { });
+    api.auth.me().then(setMe).catch(() => { });
+    api.projects.list().then(setProjects).catch(() => { });
   }, []);
 
+  useEffect(() => {
+    api.projects.list().then(setProjects).catch(() => { });
+  }, [pathname]);
+
   function logout() {
-    localStorage.removeItem('token');
-    router.push('/login');
+    const CORE_API = process.env.NEXT_PUBLIC_CORE_API_URL ?? 'http://localhost:3002';
+    window.location.href = `${CORE_API}/auth/logout`;
   }
 
   return (
@@ -153,11 +117,9 @@ export default function AppShell({ children, user, editorMode = false }: {
           {NAV.map((item) => {
             const isNavActive = item.exact
               ? pathname === item.href
-              : item.label === 'Workspaces'
-                ? pathname.startsWith('/dashboard/') && !pathname.startsWith('/dashboard/projects') && !pathname.startsWith('/dashboard/sessions')
-                : item.matchPrefix
-                  ? pathname.startsWith(item.matchPrefix) || pathname.startsWith(item.href)
-                  : pathname.startsWith(item.href);
+              : item.matchPrefix
+                ? pathname.startsWith(item.matchPrefix) || pathname.startsWith(item.href)
+                : pathname.startsWith(item.href);
 
             return (
               <button
@@ -166,9 +128,11 @@ export default function AppShell({ children, user, editorMode = false }: {
                 style={{
                   display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
                   borderRadius: 8, fontSize: 13.5, fontWeight: 500, textAlign: 'left', width: '100%',
-                  background: isNavActive ? 'var(--accent)' : 'transparent',
-                  color: isNavActive ? '#fff' : 'var(--text-2)',
-                  border: 'none', cursor: 'pointer',
+                  background: isNavActive ? 'var(--accent-soft)' : 'transparent',
+                  color: isNavActive ? 'var(--accent-h)' : 'var(--text-2)',
+                  border: 'none',
+                  borderLeft: isNavActive ? '2px solid var(--accent)' : '2px solid transparent',
+                  cursor: 'pointer',
                 }}
                 onMouseEnter={e => { if (!isNavActive) (e.currentTarget as HTMLElement).style.background = 'var(--bg-hover)'; }}
                 onMouseLeave={e => { if (!isNavActive) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
@@ -179,38 +143,45 @@ export default function AppShell({ children, user, editorMode = false }: {
             );
           })}
 
-          {/* Workspaces quick-list */}
+          {/* Projects quick-list */}
           <div style={{ marginTop: 18, marginBottom: 4, padding: '0 12px' }}>
-            <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600, color: 'var(--text-3)' }}>Workspaces</span>
+            <span style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600, color: 'var(--text-3)' }}>Projects</span>
           </div>
-          {workspaces.slice(0, 5).map((ws, i) => (
-            <button
-              key={ws.id}
-              onClick={() => router.push('/dashboard')}
-              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 12px', borderRadius: 8, fontSize: 13, textAlign: 'left', width: '100%', background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-2)' }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--bg-hover)'; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
-            >
-              <div style={{ width: 20, height: 20, borderRadius: 5, background: WS_COLORS[i % WS_COLORS.length], display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
-                {ws.name.charAt(0).toUpperCase()}
-              </div>
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ws.name}</span>
-            </button>
-          ))}
+          {projects.map((proj) => {
+            const isActive = pathname.includes(proj.id);
+            return (
+              <button
+                key={proj.id}
+                onClick={() => router.push(`/dashboard/${proj.workspace.id}/${proj.id}`)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '6px 12px', borderRadius: 8,
+                  fontSize: 13, textAlign: 'left', width: '100%',
+                  background: isActive ? 'var(--accent-soft)' : 'transparent',
+                  border: 'none', cursor: 'pointer',
+                  color: isActive ? 'var(--accent-h)' : 'var(--text-2)',
+                }}
+                onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLElement).style.background = 'var(--bg-hover)'; }}
+                onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+              >
+                <span style={{ fontSize: 11, opacity: 0.6, flexShrink: 0 }}>▸</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{proj.name}</span>
+              </button>
+            );
+          })}
         </nav>
 
 
         {/* User */}
         <div style={{ position: 'relative', flexShrink: 0 }}>
           {showUserMenu && (
-            <div style={{ position: 'absolute', bottom: '100%', left: 8, right: 8, marginBottom: 4, borderRadius: 10, background: 'var(--bg-card)', border: '1px solid var(--border)', boxShadow: '0 8px 24px rgba(0,0,0,0.4)', overflow: 'hidden', zIndex: 50 }}>
+            <div style={{ position: 'absolute', bottom: '100%', left: 8, right: 8, marginBottom: 4, borderRadius: 10, background: 'var(--bg-card)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)', overflow: 'hidden', zIndex: 50 }}>
               <div style={{ padding: '10px 14px 8px', borderBottom: '1px solid var(--border)' }}>
                 <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--text-1)' }}>{me?.username ?? '—'}</p>
                 <p style={{ margin: 0, fontSize: 11, color: 'var(--text-3)' }}>{me?.email ?? ''}</p>
               </div>
               <button
                 onClick={logout}
-                style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '9px 14px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: '#f87171', textAlign: 'left' }}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '9px 14px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: 'var(--red)', textAlign: 'left' }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--bg-hover)'; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'none'; }}
               >
@@ -237,36 +208,6 @@ export default function AppShell({ children, user, editorMode = false }: {
 
       {/* ── Main ── */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
-
-        {/* Topbar — hidden in editor mode */}
-        {!editorMode && (
-          <header style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '0 24px', height: 52, flexShrink: 0, background: 'var(--bg-surface)', borderBottom: '1px solid var(--border)' }}>
-            <button style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-1)', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>
-              <div style={{ width: 20, height: 20, borderRadius: 5, background: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 10, fontWeight: 700, flexShrink: 0 }}>
-                {me?.username?.charAt(0).toUpperCase() ?? 'A'}
-              </div>
-              <span>{me?.username ? `${me.username}'s Workspace` : 'Workspace'}</span>
-              <span style={{ color: 'var(--text-3)', display: 'flex' }}>{Icon.chevronDown}</span>
-            </button>
-
-            <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8, padding: '7px 14px', borderRadius: 8, background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-3)', fontSize: 13 }}>
-              <span style={{ display: 'flex', opacity: 0.5 }}>{Icon.search}</span>
-              <span>Search projects, files, sessions...</span>
-              <span style={{ marginLeft: 'auto', fontSize: 11, padding: '2px 6px', borderRadius: 5, background: 'var(--bg-hover)', fontFamily: 'monospace' }}>⌘K</span>
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <button style={{ width: 34, height: 34, borderRadius: 8, background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-2)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', position: 'relative' }}>
-                {Icon.bell}
-                <span style={{ position: 'absolute', top: 8, right: 8, width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', border: '1.5px solid var(--bg-surface)' }} />
-              </button>
-              <button style={{ width: 34, height: 34, borderRadius: 8, background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-2)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
-                {Icon.help}
-              </button>
-              <Avatar name={me?.username ?? '?'} avatarUrl={me?.avatarUrl} size={8} />
-            </div>
-          </header>
-        )}
 
         <main style={{ flex: 1, overflowY: editorMode ? 'hidden' : 'auto', display: 'flex', flexDirection: 'column' }}>
           {children}

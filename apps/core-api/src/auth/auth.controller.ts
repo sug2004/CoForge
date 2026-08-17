@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Body,
   Req,
   Res,
@@ -84,13 +85,33 @@ export class AuthController {
 
   @Get('auth/logout')
   logout(@Res() res: Response) {
-    res.clearCookie('token').redirect(process.env.FRONTEND_URL + '/login');
+    res.clearCookie('token').json({ ok: true });
   }
 
   @Get('me')
   @UseGuards(JwtAuthGuard)
-  me(@Req() req) {
-    return req.user;
+  async me(@Req() req: { user: { id: string } }) {
+    const user = await this.authService.findById(req.user.id);
+    return user;
+  }
+
+  @Patch('me')
+  @UseGuards(JwtAuthGuard)
+  async updateMe(
+    @Req() req: { user: { id: string } },
+    @Body() body: { username?: string; email?: string; avatarUrl?: string },
+  ) {
+    return this.authService.updateProfile(req.user.id, body);
+  }
+
+  @Patch('me/password')
+  @UseGuards(JwtAuthGuard)
+  async changePassword(
+    @Req() req: { user: { id: string } },
+    @Body() body: { currentPassword: string; newPassword: string },
+  ) {
+    await this.authService.changePassword(req.user.id, body.currentPassword, body.newPassword);
+    return { ok: true };
   }
 
   @Get('me/token')

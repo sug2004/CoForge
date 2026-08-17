@@ -7,6 +7,16 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 
+const USER_SELECT = {
+  id: true,
+  githubId: true,
+  username: true,
+  email: true,
+  avatarUrl: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -22,12 +32,33 @@ export class AuthService {
     return this.sign(user);
   }
 
+  async findById(id: string) {
+    return this.prisma.user.findUnique({ where: { id }, select: USER_SELECT });
+  }
+
+  async updateProfile(
+    id: string,
+    data: { username?: string; email?: string; avatarUrl?: string },
+  ) {
+    return this.prisma.user.update({ where: { id }, data, select: USER_SELECT });
+  }
+
+  async changePassword(id: string, currentPassword: string, newPassword: string) {
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    if (!user?.password) throw new UnauthorizedException('No password set — use GitHub login');
+    const valid = await bcrypt.compare(currentPassword, user.password);
+    if (!valid) throw new UnauthorizedException('Current password is incorrect');
+    const hash = await bcrypt.hash(newPassword, 10);
+    await this.prisma.user.update({ where: { id }, data: { password: hash } });
+  }
+
   async register(username: string, email: string, password: string) {
     const existing = await this.prisma.user.findUnique({ where: { email } });
     if (existing) throw new ConflictException('Email already in use');
     const hash = await bcrypt.hash(password, 10);
     const user = await this.prisma.user.create({
       data: { username, email, password: hash },
+      select: USER_SELECT,
     });
     return { accessToken: await this.sign(user), user };
   }
@@ -37,7 +68,8 @@ export class AuthService {
     if (!user?.password) throw new UnauthorizedException('Invalid credentials');
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) throw new UnauthorizedException('Invalid credentials');
-    return { accessToken: await this.sign(user), user };
+    const safe = await this.findById(user.id);
+    return { accessToken: await this.sign(user), user: safe };
   }
 
   async validateGithubUser(profile: {
@@ -73,7 +105,7 @@ export class AuthService {
         });
       }
     }
-    return { accessToken: await this.sign(user), user };
+    return { accessToken: await this.sign(user), user: await this.findById(user.id) };
   }
 
   async linkGithub(

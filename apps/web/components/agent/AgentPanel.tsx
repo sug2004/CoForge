@@ -10,18 +10,18 @@ import { Markdown, PlainText } from './Markdown';
 const SYNC_SERVER_URL = process.env.NEXT_PUBLIC_SYNC_SERVER_URL ?? 'http://localhost:3001';
 
 const C = {
-  bg: '#0a0c10',
-  surface: '#0d1017',
-  card: '#111520',
-  hover: '#161b28',
-  border: '#1e2535',
-  text1: '#e8f0e0',
-  text2: '#7a9070',
-  text3: '#3d5040',
-  accent: '#3ef07f',
-  green: '#3ef07f',
-  red: '#f05a3e',
-  yellow: '#f0d03e',
+  bg: 'var(--bg-base)',
+  surface: 'var(--bg-surface)',
+  card: 'var(--bg-card)',
+  hover: 'var(--bg-hover)',
+  border: 'var(--border)',
+  text1: 'var(--text-1)',
+  text2: 'var(--text-2)',
+  text3: 'var(--text-3)',
+  accent: 'var(--accent)',
+  green: 'var(--green)',
+  red: 'var(--red)',
+  yellow: 'var(--yellow)',
 };
 
 export interface ProposedEdit {
@@ -777,7 +777,7 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
         <div
           onMouseDown={handleResizeStart}
           style={{ position: 'absolute', top: 0, left: 0, width: 4, height: '100%', cursor: 'col-resize', zIndex: 10, background: 'transparent', transition: 'background 0.15s' }}
-          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = C.accent + '44'; }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--accent-soft)'; }}
           onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
         />
         {/* Header */}
@@ -846,7 +846,7 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
 
         {/* Error banner — shown in the empty state too so failures aren't silent */}
         {error && (
-          <div style={{ padding: '8px 14px', borderTop: `1px solid ${C.red}44`, background: '#2a1010', color: C.red, fontSize: 11, display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'JetBrains Mono, monospace' }}>
+          <div style={{ padding: '8px 14px', borderTop: `1px solid rgba(209,69,74,0.27)`, background: 'rgba(209,69,74,0.08)', color: C.red, fontSize: 11, display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'JetBrains Mono, monospace' }}>
             <span style={{ flex: 1 }}>{error}</span>
             <button
               onClick={() => setError(null)}
@@ -870,7 +870,7 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
       <div
         onMouseDown={handleResizeStart}
         style={{ position: 'absolute', top: 0, left: 0, width: 4, height: '100%', cursor: 'col-resize', zIndex: 10, background: 'transparent', transition: 'background 0.15s' }}
-        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = C.accent + '44'; }}
+        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--accent-soft)'; }}
         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
       />
       {/* Header */}
@@ -1108,7 +1108,7 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
 
       {/* Error banner */}
       {error && (
-        <div style={{ padding: '8px 14px', borderTop: `1px solid ${C.red}44`, background: '#2a1010', color: C.red, fontSize: 11, display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'JetBrains Mono, monospace' }}>
+        <div style={{ padding: '8px 14px', borderTop: `1px solid rgba(209,69,74,0.27)`, background: 'rgba(209,69,74,0.08)', color: C.red, fontSize: 11, display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'JetBrains Mono, monospace' }}>
           <span style={{ flex: 1 }}>{error}</span>
           <button
             onClick={() => setError(null)}
@@ -1149,16 +1149,16 @@ export function AgentPanel({ sessionId, userId, editorRef, ydocRef }: {
             style={{
               display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
               padding: '0 22px', borderRadius: 8,
-              background: C.accent, border: '2px solid ' + C.accent, color: C.bg, fontSize: 14, fontWeight: 700,
+              background: '#1e3a5f', color: '#e8edf3', fontSize: 14, fontWeight: 700,
               cursor: sending || !inputValue.trim() ? 'not-allowed' : 'pointer',
               opacity: sending || !inputValue.trim() ? 0.6 : 1,
               alignSelf: 'stretch', minHeight: 50,
               fontFamily: 'JetBrains Mono, monospace', textTransform: 'uppercase', letterSpacing: '0.08em',
-              boxShadow: sending ? 'none' : `0 0 12px ${C.accent}55`,
+              boxShadow: sending ? 'none' : '0 0 12px var(--accent-soft)',
             }}
           >
             {sending && (
-              <span style={{ width: 14, height: 14, border: '2px solid rgba(10,12,16,0.3)', borderTopColor: C.bg, borderRadius: '50%', display: 'inline-block', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
+              <span style={{ width: 14, height: 14, border: '2px solid rgba(232,237,243,0.3)', borderTopColor: '#e8edf3', borderRadius: '50%', display: 'inline-block', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
             )}
             {sending ? 'Working' : 'Send'}
           </button>

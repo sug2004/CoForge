@@ -66,8 +66,18 @@ export interface AgentThread {
 
 export const api = {
   auth: {
-    me: () => apiFetch<{ id: string; username: string; email: string | null; avatarUrl: string | null }>('/me'),
+    me: () => apiFetch<{ id: string; githubId: string | null; username: string; email: string | null; avatarUrl: string | null; createdAt: string }>('/me'),
     meToken: () => apiFetch<{ accessToken: string }>('/me/token'),
+    updateProfile: (data: { username?: string; email?: string; avatarUrl?: string }) =>
+      apiFetch<{ id: string; username: string; email: string | null; avatarUrl: string | null }>('/me', {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    changePassword: (data: { currentPassword: string; newPassword: string }) =>
+      apiFetch<{ ok: boolean }>('/me/password', {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
   },
   sessions_clone: (sessionId: string) =>
     apiFetch<{ files: Record<string, string> }>(`/sessions/${sessionId}/clone`, { method: 'POST' }),
@@ -77,6 +87,7 @@ export const api = {
     delete: (id: string) => apiFetch<void>(`/workspaces/${id}`, { method: 'DELETE' }),
   },
   projects: {
+    list: () => apiFetch<(Project & { workspace: { id: string; name: string } })[]>('/projects'),
     create: (workspaceId: string, name: string, repoUrl?: string) =>
       apiFetch<Project>(`/workspaces/${workspaceId}/projects`, { method: 'POST', body: JSON.stringify({ name, repoUrl }) }),
     get: (id: string) => apiFetch<Project & { sessions: Session[] }>(`/projects/${id}`),
