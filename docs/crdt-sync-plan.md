@@ -141,7 +141,7 @@ CoForge/
       package.json
 
   docs/
-    milestone-1-plan.md             # this file
+    crdt-sync-plan.md             # this file
 ```
 
 ---
